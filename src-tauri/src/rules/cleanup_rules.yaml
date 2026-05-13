@@ -1,0 +1,136 @@
+# CleanMacProAI 清理规则定义
+# 版本：1.0
+# 安全原则：宁可少删，不可误删
+
+version: 1
+
+categories:
+  # ── 系统缓存 (低风险) ──
+  system_cache:
+    name: "系统缓存"
+    description: "macOS 和应用程序的缓存文件，删除后会自动重建，不影响正常使用"
+    risk: low
+    paths:
+      - "~/Library/Caches/*"
+      - "/Library/Caches/*"
+    exclude:
+      - "*.plist"  # 不删除 plist 配置文件
+
+  # ── 应用日志 (低风险) ──
+  app_logs:
+    name: "应用日志"
+    description: "应用程序运行时产生的日志文件，通常可以安全删除"
+    risk: low
+    paths:
+      - "~/Library/Logs/*"
+      - "/Library/Logs/*"
+
+  # ── 浏览器缓存 (低风险) ──
+  browser_cache:
+    name: "浏览器缓存"
+    description: "浏览器缓存的图片和临时文件，删除后网页加载可能稍慢"
+    risk: low
+    paths:
+      - "~/Library/Caches/Google/Chrome/Default/Cache/*"
+      - "~/Library/Caches/Google/Chrome/Default/Code Cache/*"
+      - "~/Library/Caches/com.apple.Safari/fsCachedData/*"
+      - "~/Library/Caches/com.apple.Safari/Cache.db*"
+      - "~/Library/Caches/Microsoft/Edge/Default/Cache/*"
+      - "~/Library/Caches/com.brave.Browser/Default/Cache/*"
+
+  # ── Xcode 构建缓存 (低风险) ──
+  xcode_derived:
+    name: "Xcode 构建缓存"
+    description: "Xcode 编译中间产物，可安全删除，下次构建时会自动重新生成"
+    risk: low
+    paths:
+      - "~/Library/Developer/Xcode/DerivedData/*"
+      - "~/Library/Developer/Xcode/Archives/*"
+      - "~/Library/Developer/Xcode/iOS DeviceSupport/*"
+      - "~/Library/Developer/CoreSimulator/Devices/*/data/Library/Caches/*"
+
+  # ── Homebrew 缓存 (低风险) ──
+  homebrew_cache:
+    name: "包管理器缓存"
+    description: "Homebrew 下载的安装包缓存，删除后重新安装时会再次下载"
+    risk: low
+    paths:
+      - "~/Library/Caches/Homebrew/*"
+      - "/Library/Caches/Homebrew/*"
+      - "$(brew --cache)/*"
+
+  # ── npm/pnpm/yarn 缓存 (低风险) ──
+  node_cache:
+    name: "前端包管理器缓存"
+    description: "npm/pnpm/yarn 的全局缓存，不影响已安装的项目依赖"
+    risk: low
+    paths:
+      - "~/.npm/*"
+      - "~/.pnpm-store/*"
+      - "~/.yarn/cache/*"
+
+  # ── Docker 无用数据 (低风险) ──
+  docker_unused:
+    name: "Docker 无用数据"
+    description: "Docker 未使用的镜像、容器、卷和构建缓存"
+    risk: low
+    paths: []
+    # 注意：Docker 清理需要执行 `docker system prune`，不走文件路径扫描
+
+  # ── 下载残留 (中风险) ──
+  downloads_leftover:
+    name: "下载残留"
+    description: "下载目录中已过期的 DMG、ZIP 等安装包，建议确认后删除"
+    risk: medium
+    paths:
+      - "~/Downloads/*.dmg"
+      - "~/Downloads/*.zip"
+      - "~/Downloads/*.tar.gz"
+      - "~/Downloads/*.pkg"
+
+  # ── 废纸篓 (中风险) ──
+  trash:
+    name: "废纸篓内容"
+    description: "已移到废纸篓但未清空的文件和文件夹"
+    risk: medium
+    paths:
+      - "~/.Trash/*"
+      - "/Volumes/*/.Trash/*"
+
+  # ── 多余语言包 (中风险) ──
+  language_files:
+    name: "多余语言包"
+    description: "应用中非中文/英文的语言包文件，删除后应用仍正常运行"
+    risk: medium
+    paths:
+      # 需要在代码中特殊处理 .lproj 目录
+    note: "需通过扫描 .app 包内的 *.lproj 实现，不走普通路径扫描"
+
+  # ── Time Machine 本地快照 (高风险) ──
+  tm_snapshots:
+    name: "Time Machine 本地快照"
+    description: "Time Machine 的本地快照会占用大量磁盘空间，删除不影响已备份到外接硬盘的数据"
+    risk: high
+    paths: []
+    # 注意：需通过 tmutil 命令管理，不走文件路径扫描
+    command: "tmutil thinlocalsnapshots / 10000000000 4"
+
+  # ── 邮件附件缓存 (高风险) ──
+  mail_attachments:
+    name: "邮件附件缓存"
+    description: "Mail.app 下载的邮件附件缓存，删除后需重新从服务器下载"
+    risk: high
+    paths:
+      - "~/Library/Mail/V*/MailData/Downloads/*"
+
+# ── 排除规则（永远不扫描的路径）───
+always_exclude:
+  - "~/Library/Application Support/*"       # 应用数据，不可删除
+  - "~/Library/Preferences/*"               # 偏好设置，删除会丢失配置
+  - "~/Library/Keychains/*"                 # 钥匙串，绝对不可碰
+  - "~/Library/Mail/*"                      # 邮件数据
+  - "~/Documents/*"                         # 用户文档
+  - "~/Desktop/*"                           # 桌面文件
+  - "~/Pictures/*"                          # 照片
+  - "~/Music/*"                             # 音乐
+  - "/System/*"                             # 系统目录

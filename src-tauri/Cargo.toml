@@ -1,0 +1,30 @@
+[package]
+name = "cleanmacproai"
+version = "0.1.0"
+description = "CleanMacProAI — AI-powered Mac cleaner"
+authors = ["CleanMacProAI Team"]
+edition = "2021"
+
+[lib]
+name = "cleanmacproai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["shell-open"] }
+tauri-plugin-macos-permissions = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+walkdir = "2"
+fs_extra = "1"
+trash = "5"
+dirs = "5"
+chrono = "0.4"
+log = "0.4"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }

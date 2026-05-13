@@ -1,0 +1,128 @@
+name: "🚀 功能开发"
+description: "提交新功能开发任务"
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 功能开发任务模板
+
+  - type: input
+    id: module
+    attributes:
+      label: 所属模块
+      description: "scanner / cleaner / uninstaller / ui / rules / infra"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 功能描述
+      description: "详细描述要实现什么功能"
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: "完成的标准（可检查的条目）"
+      placeholder: |
+        - [ ] 扫描 ~/Library/Caches 并返回总大小
+        - [ ] 进度回调每 500ms 更新一次
+        - [ ] 遇到权限错误时跳过而非崩溃
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 优先级
+      options:
+        - P0 - 阻塞性（立即处理）
+        - P1 - 高（本周完成）
+        - P2 - 中（下一个迭代）
+        - P3 - 低（有空再做）
+    validations:
+      required: true
+
+  - type: textarea
+    id: tech-notes
+    attributes:
+      label: 技术备注
+      description: "实现思路、相关 API、参考文档等"
+
+---
+name: "🐛 Bug 修复"
+description: "报告并修复 Bug"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "## Bug 修复模板"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: "描述 bug 现象"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: "如何重现这个 bug"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: "应该发生什么"
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本
+      placeholder: "macOS 15.x (Sequoia)"
+
+---
+name: "🔒 安全审查"
+description: "清理规则或权限变更的安全审查"
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: "## 安全审查 — 涉及文件操作/系统权限的变更必须走此流程"
+
+  - type: textarea
+    id: changes
+    attributes:
+      label: 变更内容
+      description: "修改了哪些清理规则或权限"
+    validations:
+      required: true
+
+  - type: textarea
+    id: risk-assessment
+    attributes:
+      label: 风险评估
+      description: "是否可能误删用户文件？影响范围？"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deletion-type
+    attributes:
+      label: 删除类型
+      options:
+        - 移到废纸篓（可恢复）
+        - 直接删除（不可恢复）— 需特殊审批
+    validations:
+      required: true
