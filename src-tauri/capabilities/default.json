@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "CleanMacProAI 默认权限配置",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "shell:allow-open",
+    "fs:default"
+  ]
+}
