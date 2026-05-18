@@ -3,7 +3,6 @@
 use crate::models::RiskLevel;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// YAML 规则文件的结构
 #[derive(Debug, Deserialize)]
@@ -43,20 +42,6 @@ impl CategoryRule {
         }
     }
 
-    /// 解析路径模式，展开 ~ 为 home 目录
-    pub fn resolve_paths(&self) -> Vec<PathBuf> {
-        let home = dirs::home_dir().unwrap_or_default();
-        self.paths
-            .iter()
-            .map(|p| {
-                if p.starts_with('~') {
-                    home.join(&p[2..])
-                } else {
-                    PathBuf::from(p)
-                }
-            })
-            .collect()
-    }
 }
 
 /// 加载并解析规则文件

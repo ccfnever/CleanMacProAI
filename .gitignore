@@ -25,7 +25,8 @@ dist-ssr
 
 # Tauri
 src-tauri/target
-src-tauri/icons
+src-tauri/icons/*
+!src-tauri/icons/icon.png
 
 # UnoCSS
 uno.config.ts.timestamp*

@@ -96,6 +96,18 @@ GitHub Issue → AI Agent (Codex/Claude Code) → 隔离分支 → PR → 主人
 3. **白名单机制** — `always_exclude` 列表中的路径永远跳过
 4. **开源透明** — 清理规则公开可查，无黑盒操作
 
+## 📝 开发日志
+
+### 2026-05-18 — 核心功能实现
+
+- **扫描引擎**：实现基于 YAML 规则文件的系统扫描，支持 glob 模式匹配、实时进度追踪、分类扫描与文件预览
+- **清理引擎**：实现 clean_items，支持安全模式（移入废纸篓）和永久删除，添加路径安全校验（限制在 Caches/Logs/Xcode/Downloads/Trash）和 ~/ 路径展开
+- **卸载引擎**：实现 list_installed_apps，解析 .app 包和 Info.plist 获取应用信息，关联查找 ~/Library 中的缓存/偏好设置/日志等文件；实现 uninstall_app，支持安全卸载并保护系统应用
+- **磁盘信息**：替换硬编码数据为真实 `df` 命令解析结果
+- **状态管理**：在 main.rs 中添加 ScanState 全局状态管理
+- **配置更新**：tauri.conf.json identifier 改为 `com.cleanmacproai.desktop`，打包目标限定为 macOS app
+- **代码重构**：清理 core_engine 模块占位代码，移除 rules 模块冗余的 resolve_paths 方法
+
 ## 📄 License
 
 [待定 — 建议 Apache-2.0 或 MIT]

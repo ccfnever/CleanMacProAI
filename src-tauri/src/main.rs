@@ -7,8 +7,22 @@ mod core_engine;
 mod models;
 mod rules;
 
+use commands::scanner::ScanState;
+use models::ScanProgress;
+use std::sync::Mutex;
+
 fn main() {
     tauri::Builder::default()
+        .manage(Mutex::new(ScanState {
+            progress: ScanProgress {
+                is_scanning: false,
+                current_category: None,
+                completed_categories: 0,
+                total_categories: 0,
+                scanned_files: 0,
+                found_bytes: 0,
+            },
+        }))
         .plugin(tauri_plugin_macos_permissions::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
