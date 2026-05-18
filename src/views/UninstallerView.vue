@@ -1,12 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { demoApps, formatBytes, invokeOrDemo, type InstalledApp } from "../lib/demoData";
+import { computed, onMounted, ref, watch } from "vue";
+import {
+  demoApps,
+  demoCleanReport,
+  formatBytes,
+  invokeOrDemo,
+  type CleanReport,
+  type InstalledApp,
+} from "../lib/demoData";
 
 const apps = ref<InstalledApp[]>([]);
 const isLoading = ref(true);
+const isInspecting = ref(false);
+const isUninstalling = ref(false);
 const query = ref("");
 const selectedBundleId = ref<string | null>(null);
 const notice = ref<string | null>(null);
+const uninstallReport = ref<CleanReport | null>(null);
 
 const filteredApps = computed(() => {
   const keyword = query.value.trim().toLowerCase();
@@ -27,29 +37,73 @@ const totalRecoverable = computed(() =>
   apps.value.reduce((sum, app) => sum + app.related_size, 0),
 );
 
+function appTotalSize(app: InstalledApp): number {
+  return app.app_size + app.related_size;
+}
+
+function appSizeLabel(app: InstalledApp): string {
+  if (selectedBundleId.value === app.bundle_id && isInspecting.value) {
+    return "统计中...";
+  }
+  const size = appTotalSize(app);
+  return size > 0 ? formatBytes(size) : "待统计";
+}
+
+function detailSizeLabel(size: number): string {
+  return isInspecting.value ? "统计中..." : size > 0 ? formatBytes(size) : "待统计";
+}
+
 onMounted(async () => {
-  const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", demoApps);
+  const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", demoApps, undefined, 5000);
   apps.value = result.data;
   selectedBundleId.value = result.data[0]?.bundle_id ?? null;
   notice.value = result.source === "demo" ? "应用枚举命令尚未返回真实列表，当前展示可交互 Demo 数据。" : null;
   isLoading.value = false;
 });
 
+watch(selectedBundleId, async (bundleId) => {
+  if (!bundleId) return;
+
+  const current = apps.value.find((app) => app.bundle_id === bundleId);
+  if (!current || current.related_files.length > 0 || current.app_size > 0) return;
+
+  isInspecting.value = true;
+  const result = await invokeOrDemo<InstalledApp>("inspect_installed_app", current, {
+    bundleId,
+  }, 60000);
+
+  apps.value = apps.value.map((app) => (app.bundle_id === bundleId ? result.data : app));
+  if (result.source === "demo") {
+    notice.value = "当前环境无法读取该应用详情，已保留快速列表数据。";
+  }
+  isInspecting.value = false;
+});
+
 function selectApp(bundleId: string) {
   selectedBundleId.value = bundleId;
+  uninstallReport.value = null;
 }
 
 async function uninstallApp(app: InstalledApp) {
-  const result = await invokeOrDemo<string>("uninstall_app", "demo-uninstalled", {
+  isUninstalling.value = true;
+  const fallback: CleanReport = {
+    ...demoCleanReport,
+    cleaned_count: app.related_count + 1,
+    freed_bytes: app.app_size + app.related_size,
+    snapshot_id: `demo-uninstall-${app.bundle_id}`,
+  };
+  const result = await invokeOrDemo<CleanReport>("uninstall_app", fallback, {
     bundleId: app.bundle_id,
     moveToTrash: true,
   });
+  uninstallReport.value = result.data;
   apps.value = apps.value.filter((item) => item.bundle_id !== app.bundle_id);
   selectedBundleId.value = apps.value[0]?.bundle_id ?? null;
   notice.value =
     result.source === "demo"
-      ? `Demo：已从列表移除 ${app.name}，真实卸载逻辑待 Rust 接入。`
-      : `${app.name} 已移入废纸篓。`;
+      ? `Demo：已从列表移除 ${app.name}，请在 macOS App 中运行以执行真实卸载。`
+      : `${app.name} 及关联残留已移入废纸篓。`;
+  isUninstalling.value = false;
 }
 </script>
 
@@ -58,8 +112,8 @@ async function uninstallApp(app: InstalledApp) {
     <div class="toolbar-panel">
       <div>
         <p class="section-kicker">应用卸载</p>
-        <h1>{{ formatBytes(totalRecoverable) }}</h1>
-        <p>可跟随应用一起处理的缓存、日志、偏好残留。系统应用默认标记为只读。</p>
+        <h1>{{ totalRecoverable > 0 ? formatBytes(totalRecoverable) : "按需统计" }}</h1>
+        <p>列表会先快速出现；点选应用后统计本体大小、缓存、日志和偏好残留。</p>
       </div>
       <label class="search-box">
         <span>⌕</span>
@@ -85,7 +139,7 @@ async function uninstallApp(app: InstalledApp) {
             <strong>{{ app.name }}</strong>
             <small>{{ app.bundle_id }}</small>
           </span>
-          <span class="app-size">{{ formatBytes(app.app_size + app.related_size) }}</span>
+          <span class="app-size">{{ appSizeLabel(app) }}</span>
         </button>
 
         <div v-if="filteredApps.length === 0" class="empty-row">没有匹配的应用</div>
@@ -103,21 +157,25 @@ async function uninstallApp(app: InstalledApp) {
         <dl class="detail-list">
           <div>
             <dt>应用本体</dt>
-            <dd>{{ formatBytes(selectedApp.app_size) }}</dd>
+            <dd>{{ detailSizeLabel(selectedApp.app_size) }}</dd>
           </div>
           <div>
             <dt>关联残留</dt>
-            <dd>{{ formatBytes(selectedApp.related_size) }}</dd>
+            <dd>{{ detailSizeLabel(selectedApp.related_size) }}</dd>
           </div>
           <div>
             <dt>关联文件</dt>
-            <dd>{{ selectedApp.related_count.toLocaleString() }}</dd>
+            <dd>{{ isInspecting ? "统计中..." : selectedApp.related_count.toLocaleString() }}</dd>
           </div>
           <div>
             <dt>安装路径</dt>
             <dd>{{ selectedApp.app_path }}</dd>
           </div>
         </dl>
+
+        <div v-if="isInspecting" class="inspect-state">
+          正在检查 {{ selectedApp.name }} 的体积和关联残留...
+        </div>
 
         <div class="cleanup-map">
           <p>将检查</p>
@@ -127,16 +185,42 @@ async function uninstallApp(app: InstalledApp) {
           <span>~/Library/Application Support</span>
         </div>
 
+        <div class="related-preview">
+          <div class="related-head">
+            <strong>关联残留预览</strong>
+            <small>{{ selectedApp.related_files.length }} 项</small>
+          </div>
+          <div v-if="selectedApp.related_files.length" class="related-list">
+            <div v-for="file in selectedApp.related_files" :key="file.path">
+              <span>{{ file.path }}</span>
+              <strong>{{ formatBytes(file.size) }}</strong>
+            </div>
+          </div>
+          <p v-else>暂未发现可跟随卸载的关联残留。</p>
+        </div>
+
         <button
           type="button"
           class="danger-action"
-          :disabled="selectedApp.is_system_app"
+          :disabled="selectedApp.is_system_app || isUninstalling"
           @click="uninstallApp(selectedApp)"
         >
-          <span>⌫</span>
-          安全卸载并移入废纸篓
+          <span>{{ isUninstalling ? "◌" : "⌫" }}</span>
+          {{ isUninstalling ? "卸载中" : "安全卸载并移入废纸篓" }}
         </button>
       </aside>
+    </div>
+
+    <div v-if="uninstallReport" class="report-panel">
+      <span>✓</span>
+      <div>
+        <strong>卸载报告已生成</strong>
+        <p>
+          释放 {{ formatBytes(uninstallReport.freed_bytes) }}，处理
+          {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件，跳过
+          {{ uninstallReport.skipped_count }} 个。快照：{{ uninstallReport.snapshot_id }}
+        </p>
+      </div>
     </div>
   </section>
 </template>
@@ -150,7 +234,8 @@ async function uninstallApp(app: InstalledApp) {
 .toolbar-panel,
 .app-list,
 .detail-panel,
-.loading-state {
+.loading-state,
+.report-panel {
   border: 1px solid rgba(35, 52, 45, 0.09);
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.78);
@@ -362,6 +447,70 @@ h1 {
   font-weight: 750;
 }
 
+.inspect-state {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(31, 139, 114, 0.1);
+  color: #1f6f5e;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.related-preview {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  background: #f5f7f6;
+}
+
+.related-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.related-head strong {
+  font-size: 13px;
+}
+
+.related-head small,
+.related-preview p {
+  margin: 0;
+  color: #73827c;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.related-list {
+  display: grid;
+  gap: 8px;
+  max-height: 172px;
+  overflow: auto;
+}
+
+.related-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(35, 52, 45, 0.08);
+  color: #50605a;
+  font-size: 12px;
+}
+
+.related-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.related-list strong {
+  flex: 0 0 auto;
+}
+
 .danger-action {
   display: inline-flex;
   align-items: center;
@@ -380,5 +529,28 @@ h1 {
 .danger-action:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.report-panel {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-top: 18px;
+  padding: 18px;
+}
+
+.report-panel > span {
+  color: #1f8b72;
+  font-size: 24px;
+}
+
+.report-panel strong {
+  font-size: 16px;
+}
+
+.report-panel p {
+  margin: 6px 0 0;
+  color: #687871;
+  line-height: 1.7;
 }
 </style>

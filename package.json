@@ -17,7 +17,6 @@
     "@tauri-apps/api": "^2.3.0",
     "@tauri-apps/plugin-shell": "^2.2.0",
     "@tauri-apps/plugin-fs": "^2.2.0",
-    "tauri-plugin-macos-permissions-api": "^2.3.0",
     "echarts": "^5.6.0"
   },
   "devDependencies": {

@@ -23,7 +23,6 @@ fn main() {
                 found_bytes: 0,
             },
         }))
-        .plugin(tauri_plugin_macos_permissions::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
@@ -34,6 +33,7 @@ fn main() {
             commands::cleaner::clean_categories,
             commands::cleaner::get_clean_report,
             commands::uninstaller::list_installed_apps,
+            commands::uninstaller::inspect_installed_app,
             commands::uninstaller::uninstall_app,
             commands::system::get_disk_info,
             commands::system::request_permissions,

@@ -93,6 +93,8 @@ pub struct InstalledApp {
     pub related_size: u64,
     /// 关联文件数量
     pub related_count: u64,
+    /// 关联文件预览（缓存、日志、偏好设置等顶层命中项）
+    pub related_files: Vec<FileInfo>,
     /// 是否系统应用
     pub is_system_app: bool,
 }

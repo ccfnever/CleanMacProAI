@@ -39,6 +39,7 @@ export interface InstalledApp {
   app_size: number;
   related_size: number;
   related_count: number;
+  related_files: FileInfo[];
   is_system_app: boolean;
 }
 
@@ -54,9 +55,18 @@ export async function invokeOrDemo<T>(
   command: string,
   fallback: T,
   args?: Record<string, unknown>,
+  timeoutMs = 0,
 ): Promise<{ data: T; source: "native" | "demo"; error?: string }> {
   try {
-    const data = await invoke<T>(command, args);
+    const nativeCall = invoke<T>(command, args);
+    const data = timeoutMs > 0
+      ? await Promise.race([
+          nativeCall,
+          new Promise<T>((_, reject) => {
+            window.setTimeout(() => reject(new Error(`${command} timed out`)), timeoutMs);
+          }),
+        ])
+      : await nativeCall;
     const isEmptyArray = Array.isArray(data) && data.length === 0;
     const scanData = data as unknown as Partial<ScanResult>;
     const isEmptyScan =
@@ -174,6 +184,11 @@ export const demoApps: InstalledApp[] = [
     app_size: 12_884_901_888,
     related_size: 45_097_156_608,
     related_count: 3421,
+    related_files: [
+      { path: "~/Library/Developer/Xcode/DerivedData", size: 34_522_513_408 },
+      { path: "~/Library/Caches/com.apple.dt.Xcode", size: 6_891_012_096 },
+      { path: "~/Library/Preferences/com.apple.dt.Xcode.plist", size: 286_720 },
+    ],
     is_system_app: false,
   },
   {
@@ -183,6 +198,11 @@ export const demoApps: InstalledApp[] = [
     app_size: 714_572_800,
     related_size: 4_294_967_296,
     related_count: 15234,
+    related_files: [
+      { path: "~/Library/Caches/Google/Chrome", size: 3_214_180_352 },
+      { path: "~/Library/Application Support/Google/Chrome", size: 1_080_524_800 },
+      { path: "~/Library/Preferences/com.google.Chrome.plist", size: 180_224 },
+    ],
     is_system_app: false,
   },
   {
@@ -192,6 +212,11 @@ export const demoApps: InstalledApp[] = [
     app_size: 429_496_729,
     related_size: 2_147_483_648,
     related_count: 892,
+    related_files: [
+      { path: "~/Library/Application Support/Code", size: 1_711_046_656 },
+      { path: "~/Library/Caches/com.microsoft.VSCode", size: 436_142_080 },
+      { path: "~/Library/Preferences/com.microsoft.VSCode.plist", size: 294_912 },
+    ],
     is_system_app: false,
   },
   {
@@ -201,6 +226,11 @@ export const demoApps: InstalledApp[] = [
     app_size: 618_659_840,
     related_size: 1_319_411_712,
     related_count: 3712,
+    related_files: [
+      { path: "~/Library/Application Support/Slack", size: 916_455_424 },
+      { path: "~/Library/Caches/com.tinyspeck.slackmacgap", size: 402_751_488 },
+      { path: "~/Library/Preferences/com.tinyspeck.slackmacgap.plist", size: 204_800 },
+    ],
     is_system_app: false,
   },
 ];

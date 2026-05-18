@@ -2,17 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Full Disk Access 权限描述 -->
-    <key>NSDesktopFolderUsageDescription</key>
-    <string>CleanMacProAI 需要访问桌面文件夹以扫描和清理残留文件。</string>
-
-    <key>NSDocumentsFolderUsageDescription</key>
-    <string>CleanMacProAI 需要访问文档文件夹以识别大文件。</string>
-
     <key>NSDownloadsFolderUsageDescription</key>
     <string>CleanMacProAI 需要访问下载文件夹以清理过期的安装包。</string>
-
-    <key>NSRemovableVolumesUsageDescription</key>
-    <string>CleanMacProAI 需要访问外置磁盘以扫描其内容。</string>
 </dict>
 </plist>

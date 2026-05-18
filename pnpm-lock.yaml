@@ -23,9 +23,6 @@ importers:
       pinia:
         specifier: ^2.3.1
         version: 2.3.1(typescript@5.7.3)(vue@3.5.34(typescript@5.7.3))
-      tauri-plugin-macos-permissions-api:
-        specifier: ^2.3.0
-        version: 2.3.0
       vue:
         specifier: ^3.5.13
         version: 3.5.34(typescript@5.7.3)
@@ -1473,9 +1470,6 @@ packages:
   supports-color@7.2.0:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
     engines: {node: '>=8'}
-
-  tauri-plugin-macos-permissions-api@2.3.0:
-    resolution: {integrity: sha512-pZp0jmDySysBqrGueknd1a7Rr4XEO9aXpMv9TNrT2PDHP0MSH20njieOagsFYJ5MCVb8A+wcaK0cIkjUC2dOww==}
 
   tinyexec@1.1.2:
     resolution: {integrity: sha512-dAqSqE/RabpBKI8+h26GfLq6Vb3JVXs30XYQjdMjaj/c2tS8IYYMbIzP599KtRj7c57/wYApb3QjgRgXmrCukA==}
@@ -3042,10 +3036,6 @@ snapshots:
   supports-color@7.2.0:
     dependencies:
       has-flag: 4.0.0
-
-  tauri-plugin-macos-permissions-api@2.3.0:
-    dependencies:
-      '@tauri-apps/api': 2.11.0
 
   tinyexec@1.1.2: {}
 
