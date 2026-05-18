@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   demoApps,
   demoCleanReport,
@@ -11,12 +11,13 @@ import {
 
 const apps = ref<InstalledApp[]>([]);
 const isLoading = ref(true);
-const isInspecting = ref(false);
+const inspectingBundleId = ref<string | null>(null);
 const isUninstalling = ref(false);
 const query = ref("");
 const selectedBundleId = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
+let inspectRequestId = 0;
 
 const filteredApps = computed(() => {
   const keyword = query.value.trim().toLowerCase();
@@ -32,6 +33,8 @@ const filteredApps = computed(() => {
 const selectedApp = computed(
   () => apps.value.find((app) => app.bundle_id === selectedBundleId.value) ?? filteredApps.value[0],
 );
+
+const isInspecting = computed(() => inspectingBundleId.value === selectedBundleId.value);
 
 const totalRecoverable = computed(() =>
   apps.value.reduce((sum, app) => sum + app.related_size, 0),
@@ -61,27 +64,32 @@ onMounted(async () => {
   isLoading.value = false;
 });
 
-watch(selectedBundleId, async (bundleId) => {
+async function inspectApp(bundleId: string) {
   if (!bundleId) return;
 
   const current = apps.value.find((app) => app.bundle_id === bundleId);
   if (!current || current.related_files.length > 0 || current.app_size > 0) return;
 
-  isInspecting.value = true;
+  const requestId = ++inspectRequestId;
+  inspectingBundleId.value = bundleId;
   const result = await invokeOrDemo<InstalledApp>("inspect_installed_app", current, {
     bundleId,
+    appPath: current.app_path,
   }, 60000);
+
+  if (requestId !== inspectRequestId || selectedBundleId.value !== bundleId) return;
 
   apps.value = apps.value.map((app) => (app.bundle_id === bundleId ? result.data : app));
   if (result.source === "demo") {
     notice.value = "当前环境无法读取该应用详情，已保留快速列表数据。";
   }
-  isInspecting.value = false;
-});
+  inspectingBundleId.value = null;
+}
 
 function selectApp(bundleId: string) {
   selectedBundleId.value = bundleId;
   uninstallReport.value = null;
+  void inspectApp(bundleId);
 }
 
 async function uninstallApp(app: InstalledApp) {

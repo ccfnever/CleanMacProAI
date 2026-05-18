@@ -44,7 +44,19 @@ pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
 }
 
 #[tauri::command]
-pub async fn inspect_installed_app(bundle_id: String) -> Result<InstalledApp, String> {
+pub async fn inspect_installed_app(
+    bundle_id: String,
+    app_path: Option<String>,
+) -> Result<InstalledApp, String> {
+    if let Some(app_path) = app_path {
+        let path = expand_home(&app_path);
+        if let Some(app) = read_app_bundle(&path, true) {
+            if app.bundle_id == bundle_id {
+                return Ok(app);
+            }
+        }
+    }
+
     find_app_by_bundle_id(&bundle_id, true)
         .ok_or_else(|| format!("Application '{}' not found", bundle_id))
 }
