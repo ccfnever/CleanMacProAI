@@ -31,6 +31,7 @@ fn main() {
             commands::scanner::get_scan_progress,
             commands::scanner::cancel_scan,
             commands::cleaner::clean_items,
+            commands::cleaner::clean_categories,
             commands::cleaner::get_clean_report,
             commands::uninstaller::list_installed_apps,
             commands::uninstaller::uninstall_app,

@@ -108,6 +108,15 @@ GitHub Issue → AI Agent (Codex/Claude Code) → 隔离分支 → PR → 主人
 - **配置更新**：tauri.conf.json identifier 改为 `com.cleanmacproai.desktop`，打包目标限定为 macOS app
 - **代码重构**：清理 core_engine 模块占位代码，移除 rules 模块冗余的 resolve_paths 方法
 
+### 2026-05-18 — 按分类清理 + 权限引导
+
+- **按分类清理**：新增 `clean_categories` 命令，支持传入分类 ID 批量清理，自动从 YAML 规则展开路径，拦截高风险分类
+- **清理逻辑重构**：提取 `clean_paths` 共享函数，`clean_items` 改为委托调用；新增 `resolve_cleanable_paths` 和 `should_exclude` 辅助函数
+- **权限引导**：`request_permissions` 实际打开 macOS 系统设置完全磁盘访问页面；前端 Settings 新增「macOS 权限」面板，一键跳转引导
+- **清理按钮 loading**：ScannerView 新增 `isCleaning` 状态，清理中按钮显示"清理中"并禁用，防止重复点击
+- **清理调用优化**：前端改为传分类 ID 调用 `clean_categories`，不再逐个传递文件路径
+- **文案优化**：简化风险说明和 Demo 模式提示语
+
 ## 📄 License
 
 [待定 — 建议 Apache-2.0 或 MIT]

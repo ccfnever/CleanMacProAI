@@ -21,6 +21,7 @@ const expandedCategory = ref<string | null>(null);
 const cleanReport = ref<CleanReport | null>(null);
 const dataSource = ref<"native" | "demo">("demo");
 const notice = ref<string | null>(null);
+const isCleaning = ref(false);
 
 const selectedItems = computed(() =>
   scanResults.value.filter((item) => selectedCategories.value.has(item.id)),
@@ -88,21 +89,22 @@ function riskLabel(risk: string) {
 }
 
 async function cleanSelected() {
-  const paths = selectedItems.value.flatMap((item) => item.files.map((file) => file.path));
+  isCleaning.value = true;
   const fallback = {
     ...demoCleanReport,
     cleaned_count: selectedItems.value.reduce((sum, item) => sum + item.file_count, 0),
     freed_bytes: selectedTotal.value,
   };
-  const result = await invokeOrDemo<CleanReport>("clean_items", fallback, {
-    paths,
+  const result = await invokeOrDemo<CleanReport>("clean_categories", fallback, {
+    categoryIds: selectedItems.value.map((item) => item.id),
     safeMode: true,
   });
   cleanReport.value = result.data;
   notice.value =
     result.source === "demo"
-      ? "清理执行仍处于 Demo 模式：前端已完成报告闭环，真实删除逻辑待 Rust 接入。"
-      : "已按安全模式移入废纸篓。";
+      ? "清理执行处于 Demo 模式：请在 macOS App 中运行以调用 Rust 清理命令。"
+      : "已按安全模式移入废纸篓。建议重新扫描确认空间变化。";
+  isCleaning.value = false;
 }
 </script>
 
@@ -112,9 +114,7 @@ async function cleanSelected() {
       <div>
         <p class="section-kicker">智能清理</p>
         <h1>{{ scanResults.length ? formatBytes(totalCleanable) : "准备扫描" }}</h1>
-        <p>
-          默认只勾选低风险项目。中风险需要人工确认，高风险在 demo 中保持锁定，避免产品语义上误导用户。
-        </p>
+        <p>默认只勾选低风险项目。中风险需要人工确认，高风险保持锁定，避免误删用户数据。</p>
       </div>
       <button type="button" class="primary-action" :disabled="isScanning" @click="startScan">
         <span>{{ isScanning ? "◌" : "⌕" }}</span>
@@ -142,9 +142,9 @@ async function cleanSelected() {
         <p>本次选择</p>
         <strong>{{ formatBytes(selectedTotal) }}</strong>
         <span>{{ selectedItems.length }} 类项目 · {{ selectedItems.reduce((sum, item) => sum + item.file_count, 0).toLocaleString() }} 个文件</span>
-        <button type="button" :disabled="selectedCategories.size === 0" @click="cleanSelected">
-          <span>⌫</span>
-          安全清理选中项
+        <button type="button" :disabled="selectedCategories.size === 0 || isCleaning" @click="cleanSelected">
+          <span>{{ isCleaning ? "◌" : "⌫" }}</span>
+          {{ isCleaning ? "清理中" : "安全清理选中项" }}
         </button>
         <div class="risk-summary">
           <small>安全 {{ safeCount }}</small>

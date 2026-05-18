@@ -44,7 +44,10 @@ pub async fn get_disk_info() -> Result<DiskInfo, String> {
 
 #[tauri::command]
 pub async fn request_permissions() -> Result<bool, String> {
-    // Tauri 插件已注册；后续可以接入 Full Disk Access 引导 UI。
+    let _ = Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        .status()
+        .map_err(|e| format!("Failed to open System Settings: {}", e))?;
     Ok(true)
 }
 

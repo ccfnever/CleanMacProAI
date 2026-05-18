@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { invokeOrDemo } from "../lib/demoData";
 
 const safeMode = ref(true);
 const showHiddenFiles = ref(false);
@@ -7,6 +8,14 @@ const autoCleanCache = ref(false);
 const autoUpdate = ref(true);
 const language = ref("zh-CN");
 const scanDepth = ref("balanced");
+const permissionStatus = ref("建议开启，用于扫描系统级缓存和日志。");
+
+async function openFullDiskAccess() {
+  const result = await invokeOrDemo<boolean>("request_permissions", false);
+  permissionStatus.value = result.source === "native"
+    ? "已打开系统设置。添加 CleanMacProAI 后请重启应用。"
+    : "浏览器预览无法打开系统设置，请在 macOS App 中操作。";
+}
 </script>
 
 <template>
@@ -52,6 +61,24 @@ const scanDepth = ref("balanced");
           </span>
           <input v-model="autoCleanCache" type="checkbox" />
         </label>
+      </section>
+
+      <section class="panel permission-panel">
+        <div class="panel-head">
+          <span>◆</span>
+          <div>
+            <h3>macOS 权限</h3>
+            <p>完整扫描需要完全磁盘访问权限，尤其是系统缓存、日志和部分应用残留。</p>
+          </div>
+        </div>
+
+        <div class="permission-box">
+          <div>
+            <strong>完全磁盘访问</strong>
+            <small>{{ permissionStatus }}</small>
+          </div>
+          <button type="button" @click="openFullDiskAccess">打开系统设置</button>
+        </div>
       </section>
 
       <section class="panel">
@@ -181,6 +208,10 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.permission-panel {
+  grid-column: 1 / -1;
+}
+
 .panel-head {
   display: flex;
   gap: 12px;
@@ -205,7 +236,8 @@ h1 {
 }
 
 .setting-row,
-.select-row {
+.select-row,
+.permission-box {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -221,12 +253,35 @@ h1 {
 }
 
 .setting-row small,
-.select-row small {
+.select-row small,
+.permission-box small {
   display: block;
   margin-top: 4px;
   color: #73827c;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.permission-box {
+  padding: 16px;
+  border-top: 1px solid rgba(35, 52, 45, 0.08);
+  border-radius: 14px;
+  background: #f5f7f6;
+}
+
+.permission-box strong {
+  display: block;
+  font-size: 14px;
+}
+
+.permission-box button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 11px;
+  background: #172026;
+  color: #fff;
+  font-weight: 850;
 }
 
 input[type="checkbox"] {
