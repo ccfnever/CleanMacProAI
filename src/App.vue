@@ -44,8 +44,8 @@ onMounted(async () => {
       :data-source="dataSource"
     />
 
-    <main class="content-stage">
-      <header class="topbar">
+    <main :class="['content-stage', { 'uninstaller-stage': currentView === 'uninstaller' }]">
+      <header v-if="currentView !== 'uninstaller'" class="topbar">
         <div>
           <p class="eyebrow">CleanMacProAI / {{ dataSource === "native" ? "Native" : "Demo" }}</p>
           <h2>{{ currentTitle }}</h2>
@@ -113,6 +113,11 @@ button {
   flex: 1;
   overflow-y: auto;
   padding: 28px 34px 40px;
+}
+
+.content-stage.uninstaller-stage {
+  overflow: hidden;
+  padding: 0;
 }
 
 .topbar {

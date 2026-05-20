@@ -12,18 +12,58 @@ const emit = defineEmits<{
   "update:current-view": [view: string];
 }>();
 
-const navItems = [
-  { id: "dashboard", label: "概览", icon: "⌘" },
-  { id: "scanner", label: "智能清理", icon: "⌁" },
-  { id: "uninstaller", label: "应用卸载", icon: "□" },
-  { id: "settings", label: "设置", icon: "⚙" },
+const navSections = [
+  {
+    title: "",
+    items: [{ id: "scanner", label: "智能扫描", icon: "▱" }],
+  },
+  {
+    title: "清理",
+    items: [
+      { id: "dashboard", label: "系统垃圾", icon: "◷" },
+      { id: "mail", label: "邮件附件", icon: "□" },
+      { id: "trash", label: "废纸篓", icon: "▿" },
+    ],
+  },
+  {
+    title: "保护",
+    items: [
+      { id: "malware", label: "移除恶意软件", icon: "⌘" },
+      { id: "privacy", label: "隐私", icon: "◴" },
+    ],
+  },
+  {
+    title: "速度",
+    items: [
+      { id: "optimize", label: "优化", icon: "≡" },
+      { id: "settings", label: "维护", icon: "⌕" },
+    ],
+  },
+  {
+    title: "应用程序",
+    items: [
+      { id: "uninstaller", label: "卸载器", icon: "△" },
+      { id: "updater", label: "更新程序", icon: "↻" },
+      { id: "extensions", label: "扩展", icon: "⊞" },
+    ],
+  },
+  {
+    title: "文件",
+    items: [
+      { id: "space", label: "空间透镜", icon: "◌" },
+      { id: "large", label: "大型和旧文件", icon: "▭" },
+      { id: "shredder", label: "碎纸机", icon: "▥" },
+    ],
+  },
 ];
 
 const availableText = computed(() => formatBytes(props.diskInfo.available_bytes));
 const usageWidth = computed(() => `${Math.min(Math.max(props.diskInfo.usage_percent, 0), 100)}%`);
 
 function selectView(id: string) {
-  emit("update:current-view", id);
+  if (["dashboard", "scanner", "uninstaller", "settings"].includes(id)) {
+    emit("update:current-view", id);
+  }
 }
 </script>
 
@@ -48,16 +88,19 @@ function selectView(id: string) {
     </div>
 
     <nav class="nav-list" aria-label="主导航">
-      <button
-        v-for="item in navItems"
-        :key="item.id"
-        type="button"
-        :class="['nav-item', { active: currentView === item.id }]"
-        @click="selectView(item.id)"
-      >
-        <span class="nav-glyph">{{ item.icon }}</span>
-        {{ item.label }}
-      </button>
+      <div v-for="section in navSections" :key="section.title || 'scan'" class="nav-section">
+        <p v-if="section.title">{{ section.title }}</p>
+        <button
+          v-for="item in section.items"
+          :key="item.id"
+          type="button"
+          :class="['nav-item', { active: currentView === item.id }]"
+          @click="selectView(item.id)"
+        >
+          <span class="nav-glyph">{{ item.icon }}</span>
+          {{ item.label }}
+        </button>
+      </div>
     </nav>
 
     <div class="status-card">
@@ -71,6 +114,7 @@ function selectView(id: string) {
       <p>{{ availableText }} 可用</p>
       <small>{{ dataSource === "native" ? "来自本机容量信息" : "Demo 数据，后端可接入" }}</small>
     </div>
+    <button type="button" class="unlock-button">解锁完整版</button>
   </aside>
 </template>
 
@@ -78,12 +122,15 @@ function selectView(id: string) {
 .sidebar {
   width: 260px;
   padding: 18px;
-  border-right: 1px solid rgba(35, 52, 45, 0.1);
-  background: rgba(248, 250, 248, 0.78);
+  border-right: 1px solid rgba(207, 228, 247, 0.18);
+  background:
+    linear-gradient(180deg, rgba(101, 168, 205, 0.84), rgba(71, 82, 139, 0.96)),
+    #547ba6;
   backdrop-filter: blur(24px);
+  color: #eaf7ff;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
 
 .brand-block {
@@ -136,6 +183,7 @@ h1 {
   margin: 0;
   font-size: 15px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 p {
@@ -144,13 +192,26 @@ p {
 
 .brand-row p {
   margin-top: 2px;
-  color: #75847e;
+  color: rgba(235, 248, 255, 0.66);
   font-size: 12px;
 }
 
 .nav-list {
   display: grid;
-  gap: 7px;
+  gap: 9px;
+  overflow: auto;
+}
+
+.nav-section {
+  display: grid;
+  gap: 4px;
+}
+
+.nav-section p {
+  margin: 0 0 2px 2px;
+  color: rgba(228, 244, 255, 0.58);
+  font-size: 12px;
+  font-weight: 850;
 }
 
 .nav-item {
@@ -163,7 +224,7 @@ p {
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: #51615b;
+  color: rgba(239, 250, 255, 0.86);
   font-size: 14px;
   font-weight: 750;
   text-align: left;
@@ -171,14 +232,14 @@ p {
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.76);
-  color: #172026;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
 }
 
 .nav-item.active {
-  background: #172026;
+  background: rgba(45, 78, 125, 0.54);
   color: #fff;
-  box-shadow: 0 16px 30px rgba(23, 32, 38, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .nav-glyph {
@@ -192,18 +253,18 @@ p {
 .status-card {
   margin-top: auto;
   padding: 16px;
-  border: 1px solid rgba(35, 52, 45, 0.09);
+  border: 1px solid rgba(238, 249, 255, 0.16);
   border-radius: 16px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.58)),
-    #fff;
-  box-shadow: 0 18px 44px rgba(26, 45, 38, 0.08);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.08)),
+    rgba(26, 59, 99, 0.28);
+  box-shadow: 0 18px 44px rgba(31, 39, 83, 0.16);
 }
 
 .status-head {
   display: flex;
   justify-content: space-between;
-  color: #2a3a34;
+  color: #fff;
   font-size: 13px;
   font-weight: 800;
 }
@@ -212,7 +273,7 @@ p {
   height: 9px;
   margin: 12px 0 9px;
   border-radius: 999px;
-  background: #dce5e0;
+  background: rgba(238, 249, 255, 0.24);
   overflow: hidden;
 }
 
@@ -223,7 +284,7 @@ p {
 }
 
 .status-card p {
-  color: #172026;
+  color: #fff;
   font-size: 18px;
   font-weight: 850;
 }
@@ -231,7 +292,16 @@ p {
 .status-card small {
   display: block;
   margin-top: 6px;
-  color: #7b8984;
+  color: rgba(235, 248, 255, 0.66);
   font-size: 12px;
+}
+
+.unlock-button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: #f2cf52;
+  color: #405276;
+  font-weight: 950;
 }
 </style>
