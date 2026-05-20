@@ -149,17 +149,18 @@ const riskRows = computed(() => [
   gap: 28px;
   min-height: 280px;
   padding: 34px;
-  border: 1px solid rgba(35, 52, 45, 0.09);
+  border: 1px solid rgba(238, 249, 255, 0.18);
   border-radius: 24px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(248, 244, 234, 0.74)),
-    #fff;
-  box-shadow: 0 24px 80px rgba(28, 49, 42, 0.12);
+    linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.08)),
+    rgba(24, 75, 113, 0.32);
+  box-shadow: 0 24px 80px rgba(22, 41, 88, 0.22);
+  backdrop-filter: blur(18px);
 }
 
 .section-kicker {
   margin: 0 0 8px;
-  color: #1f8b72;
+  color: rgba(171, 247, 232, 0.92);
   font-size: 12px;
   font-weight: 850;
   letter-spacing: 0.08em;
@@ -169,7 +170,7 @@ const riskRows = computed(() => [
 h1 {
   max-width: 680px;
   margin: 0;
-  color: #14231e;
+  color: #fff;
   font-size: 46px;
   line-height: 1.04;
   letter-spacing: 0;
@@ -178,7 +179,7 @@ h1 {
 .hero-copy > p:not(.section-kicker) {
   max-width: 660px;
   margin: 16px 0 0;
-  color: #64736d;
+  color: rgba(235, 248, 255, 0.74);
   font-size: 15px;
   line-height: 1.8;
 }
@@ -204,14 +205,30 @@ h1 {
 }
 
 .primary-action {
-  background: #172026;
-  color: #fff;
+  background: #ffffff;
+  color: #315c7d;
+  box-shadow: 0 16px 34px rgba(20, 48, 91, 0.18);
+}
+
+.primary-action:hover,
+.secondary-action:hover,
+.panel-head button:hover {
+  transform: translateY(-1px);
+}
+
+.primary-action {
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
 .secondary-action,
 .panel-head button {
-  background: rgba(31, 139, 114, 0.1);
-  color: #1f6f5e;
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.secondary-action,
+.panel-head button {
+  background: rgba(235, 248, 255, 0.16);
+  color: #fff;
 }
 
 .disk-orbit {
@@ -233,11 +250,11 @@ h1 {
 }
 
 .track {
-  stroke: #dfe8e4;
+  stroke: rgba(235, 248, 255, 0.22);
 }
 
 .progress {
-  stroke: #1f8b72;
+  stroke: #56e0d4;
   stroke-linecap: round;
   stroke-dasharray: 314;
   transition: stroke-dashoffset 320ms ease;
@@ -252,10 +269,11 @@ h1 {
 .disk-center strong {
   font-size: 44px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 .disk-center span {
-  color: #708079;
+  color: rgba(235, 248, 255, 0.7);
   font-size: 13px;
   font-weight: 800;
 }
@@ -269,10 +287,11 @@ h1 {
 
 .metric-card,
 .panel {
-  border: 1px solid rgba(35, 52, 45, 0.09);
+  border: 1px solid rgba(238, 249, 255, 0.16);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 18px 52px rgba(28, 49, 42, 0.08);
+  background: rgba(28, 73, 109, 0.28);
+  box-shadow: 0 18px 52px rgba(22, 41, 88, 0.16);
+  backdrop-filter: blur(16px);
 }
 
 .metric-card {
@@ -280,13 +299,13 @@ h1 {
 }
 
 .metric-card > span {
-  color: #1f8b72;
+  color: #6ce6dd;
   font-size: 22px;
 }
 
 .metric-card p {
   margin: 12px 0 3px;
-  color: #75847e;
+  color: rgba(235, 248, 255, 0.66);
   font-size: 13px;
   font-weight: 800;
 }
@@ -295,10 +314,11 @@ h1 {
   display: block;
   font-size: 28px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 .metric-card small {
-  color: #7b8984;
+  color: rgba(235, 248, 255, 0.58);
 }
 
 .two-column {
@@ -322,6 +342,7 @@ h1 {
 .panel h3 {
   margin: 0;
   font-size: 18px;
+  color: #fff;
 }
 
 .risk-list,
@@ -338,7 +359,7 @@ h1 {
   gap: 12px;
   padding: 14px;
   border-radius: 13px;
-  background: #f6f8f7;
+  background: rgba(235, 248, 255, 0.1);
 }
 
 .risk-row > span {
@@ -351,10 +372,11 @@ h1 {
 .risk-row b {
   display: block;
   font-size: 14px;
+  color: #fff;
 }
 
 .risk-row small {
-  color: #78857f;
+  color: rgba(235, 248, 255, 0.6);
 }
 
 .capacity-list {
@@ -366,16 +388,17 @@ h1 {
   justify-content: space-between;
   gap: 20px;
   padding-bottom: 12px;
-  border-bottom: 1px solid rgba(35, 52, 45, 0.08);
+  border-bottom: 1px solid rgba(238, 249, 255, 0.12);
 }
 
 .capacity-list dt {
-  color: #75847e;
+  color: rgba(235, 248, 255, 0.62);
   font-weight: 800;
 }
 
 .capacity-list dd {
   margin: 0;
   font-weight: 900;
+  color: #fff;
 }
 </style>

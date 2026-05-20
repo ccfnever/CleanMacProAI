@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { computed, onMounted, ref } from "vue";
 import {
   demoApps,
@@ -43,6 +44,9 @@ const isUninstalling = ref(false);
 const query = ref("");
 const activeFacet = ref("status:all");
 const selectedBundleIds = ref<Set<string>>(new Set());
+const selectedChildKeys = ref<Set<string>>(new Set());
+const excludedChildKeys = ref<Set<string>>(new Set());
+const failedIconPaths = ref<Set<string>>(new Set());
 const expandedBundleIds = ref<Set<string>>(new Set());
 const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
@@ -137,6 +141,16 @@ function appSizeLabel(app: InstalledApp): string {
 
 function appInitial(app: InstalledApp): string {
   return app.name.trim().charAt(0).toUpperCase();
+}
+
+function appIconSrc(app: InstalledApp): string | null {
+  if (!app.icon_path || failedIconPaths.value.has(app.icon_path)) return null;
+  return convertFileSrc(app.icon_path);
+}
+
+function markIconFailed(app: InstalledApp) {
+  if (!app.icon_path) return;
+  failedIconPaths.value = new Set([...failedIconPaths.value, app.icon_path]);
 }
 
 function iconTone(app: InstalledApp): string {
@@ -236,6 +250,74 @@ function groupIcon(groupId: FileGroupId): string {
   return icons[groupId];
 }
 
+function groupKey(app: InstalledApp, group: RelatedGroup): string {
+  return `${app.bundle_id}:group:${group.id}`;
+}
+
+function fileKey(app: InstalledApp, group: RelatedGroup, file: FileInfo): string {
+  return `${app.bundle_id}:file:${group.id}:${file.path}`;
+}
+
+function isGroupSelected(app: InstalledApp, group: RelatedGroup): boolean {
+  const key = groupKey(app, group);
+  if (excludedChildKeys.value.has(key)) return false;
+  return selectedBundleIds.value.has(app.bundle_id) || selectedChildKeys.value.has(key);
+}
+
+function isFileSelected(app: InstalledApp, group: RelatedGroup, file: FileInfo): boolean {
+  const key = fileKey(app, group, file);
+  if (excludedChildKeys.value.has(groupKey(app, group)) || excludedChildKeys.value.has(key)) return false;
+  return (
+    selectedBundleIds.value.has(app.bundle_id) ||
+    selectedChildKeys.value.has(groupKey(app, group)) ||
+    selectedChildKeys.value.has(key)
+  );
+}
+
+function toggleGroup(app: InstalledApp, group: RelatedGroup) {
+  const selectedChildren = new Set(selectedChildKeys.value);
+  const excludedChildren = new Set(excludedChildKeys.value);
+  const key = groupKey(app, group);
+  const keys = [key, ...group.files.map((file) => fileKey(app, group, file))];
+
+  if (isGroupSelected(app, group)) {
+    if (selectedBundleIds.value.has(app.bundle_id)) {
+      keys.forEach((itemKey) => excludedChildren.add(itemKey));
+    } else {
+      keys.forEach((itemKey) => selectedChildren.delete(itemKey));
+    }
+  } else {
+    keys.forEach((itemKey) => {
+      excludedChildren.delete(itemKey);
+      selectedChildren.add(itemKey);
+    });
+  }
+
+  selectedChildKeys.value = selectedChildren;
+  excludedChildKeys.value = excludedChildren;
+  uninstallReport.value = null;
+}
+
+function toggleFile(app: InstalledApp, group: RelatedGroup, file: FileInfo) {
+  const selectedChildren = new Set(selectedChildKeys.value);
+  const excludedChildren = new Set(excludedChildKeys.value);
+  const key = fileKey(app, group, file);
+
+  if (isFileSelected(app, group, file)) {
+    if (selectedBundleIds.value.has(app.bundle_id) || selectedChildKeys.value.has(groupKey(app, group))) {
+      excludedChildren.add(key);
+    }
+    selectedChildren.delete(key);
+  } else {
+    excludedChildren.delete(key);
+    selectedChildren.add(key);
+  }
+
+  selectedChildKeys.value = selectedChildren;
+  excludedChildKeys.value = excludedChildren;
+  uninstallReport.value = null;
+}
+
 onMounted(async () => {
   const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", demoApps, undefined, 5000);
   apps.value = result.data;
@@ -296,6 +378,12 @@ function toggleSelected(bundleId: string) {
     next.add(bundleId);
   }
   selectedBundleIds.value = next;
+  excludedChildKeys.value = new Set(
+    [...excludedChildKeys.value].filter((key) => !key.startsWith(`${bundleId}:`)),
+  );
+  selectedChildKeys.value = new Set(
+    [...selectedChildKeys.value].filter((key) => !key.startsWith(`${bundleId}:`)),
+  );
   uninstallReport.value = null;
 }
 
@@ -303,6 +391,8 @@ function selectAllVisible() {
   const next = new Set(selectedBundleIds.value);
   for (const app of filteredApps.value) next.add(app.bundle_id);
   selectedBundleIds.value = next;
+  selectedChildKeys.value = new Set();
+  excludedChildKeys.value = new Set();
 }
 
 async function uninstallSelected() {
@@ -322,6 +412,8 @@ async function uninstallSelected() {
   uninstallReport.value = result.data;
   apps.value = apps.value.filter((item) => !removedIds.has(item.bundle_id));
   selectedBundleIds.value = new Set();
+  selectedChildKeys.value = new Set();
+  excludedChildKeys.value = new Set();
   expandedBundleIds.value = new Set();
   notice.value =
     result.source === "demo"
@@ -404,11 +496,21 @@ async function uninstallSelected() {
                 <span>✓</span>
               </button>
               <button type="button" class="expand-hit" @click="toggleExpanded(app)">
-                <span
-                  class="app-icon"
-                  :style="{ background: `linear-gradient(135deg, ${iconTone(app)}, #294f93)` }"
-                >
-                  {{ appInitial(app) }}
+                <span class="app-icon-wrap">
+                  <img
+                    v-if="appIconSrc(app)"
+                    class="app-logo"
+                    :src="appIconSrc(app) || undefined"
+                    :alt="`${app.name} 图标`"
+                    @error="markIconFailed(app)"
+                  />
+                  <span
+                    v-else
+                    class="app-icon"
+                    :style="{ background: `linear-gradient(135deg, ${iconTone(app)}, #294f93)` }"
+                  >
+                    {{ appInitial(app) }}
+                  </span>
                 </span>
                 <strong>{{ app.name }}</strong>
               </button>
@@ -421,8 +523,9 @@ async function uninstallSelected() {
                 <div class="group-row">
                   <button
                     type="button"
-                    class="selection-dot checked small"
+                    :class="['selection-dot', 'small', { checked: isGroupSelected(app, group) }]"
                     :aria-label="`选择 ${group.label}`"
+                    @click="toggleGroup(app, group)"
                   >
                     <span>✓</span>
                   </button>
@@ -433,8 +536,13 @@ async function uninstallSelected() {
                 <div v-for="file in group.files" :key="file.path" class="file-row">
                   <button
                     type="button"
-                    class="selection-dot checked tiny"
+                    :class="[
+                      'selection-dot',
+                      'tiny',
+                      { checked: isFileSelected(app, group, file) },
+                    ]"
                     :aria-label="`选择 ${file.path}`"
+                    @click="toggleFile(app, group, file)"
                   >
                     <span>✓</span>
                   </button>
@@ -732,21 +840,41 @@ async function uninstallSelected() {
   white-space: nowrap;
 }
 
-.app-icon {
+.app-icon-wrap,
+.app-icon,
+.app-logo {
   flex: 0 0 auto;
-  display: grid;
-  place-items: center;
   width: 36px;
   height: 36px;
+}
+
+.app-icon-wrap {
+  display: grid;
+  place-items: center;
+}
+
+.app-icon,
+.app-logo {
+  display: grid;
+  place-items: center;
   border-radius: 10px;
+}
+
+.app-icon {
   color: #fff;
   font-weight: 950;
   box-shadow: 0 10px 22px rgba(22, 44, 74, 0.18);
 }
 
+.app-logo {
+  object-fit: contain;
+  filter: drop-shadow(0 10px 18px rgba(22, 44, 74, 0.22));
+}
+
 .selection-dot {
-  display: grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 20px;
   height: 20px;
   border: 2px solid rgba(221, 239, 251, 0.58);
@@ -754,26 +882,35 @@ async function uninstallSelected() {
   background: transparent;
   color: transparent;
   font-size: 11px;
+  line-height: 1;
   font-weight: 950;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.selection-dot span {
+  display: block;
+  transform: translateY(-0.5px);
+  line-height: 1;
 }
 
 .selection-dot.checked {
-  border-color: #ff493f;
-  background: #ff493f;
+  border-color: #53d8d1;
+  background: #35c8c0;
   color: #fff;
+  box-shadow: 0 0 0 3px rgba(53, 200, 192, 0.16);
 }
 
 .selection-dot.small {
   width: 18px;
   height: 18px;
-  border-width: 0;
+  border-width: 1.5px;
   font-size: 10px;
 }
 
 .selection-dot.tiny {
   width: 16px;
   height: 16px;
-  border-width: 0;
+  border-width: 1.5px;
   font-size: 9px;
 }
 

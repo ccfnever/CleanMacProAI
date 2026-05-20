@@ -36,6 +36,7 @@ export interface InstalledApp {
   name: string;
   bundle_id: string;
   app_path: string;
+  icon_path?: string;
   app_size: number;
   related_size: number;
   related_count: number;

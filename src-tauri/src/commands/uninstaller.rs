@@ -175,18 +175,51 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
         }
     };
     let app_path = path.to_string_lossy().to_string();
+    let icon_path = app_icon_path(path, dictionary);
     let is_system_app = app_path.starts_with("/System/");
 
     Some(InstalledApp {
         name,
         bundle_id,
         app_path,
+        icon_path,
         app_size,
         related_size: related.total_size,
         related_count: related.total_count,
         related_files: related.preview_files,
         is_system_app,
     })
+}
+
+fn app_icon_path(bundle_path: &Path, dictionary: &plist::Dictionary) -> Option<String> {
+    let icon_name = dictionary
+        .get("CFBundleIconFile")
+        .and_then(Value::as_string)
+        .or_else(|| {
+            dictionary
+                .get("CFBundleIcons")
+                .and_then(Value::as_dictionary)
+                .and_then(|icons| icons.get("CFBundlePrimaryIcon"))
+                .and_then(Value::as_dictionary)
+                .and_then(|primary| primary.get("CFBundleIconFiles"))
+                .and_then(Value::as_array)
+                .and_then(|files| files.iter().filter_map(Value::as_string).next_back())
+        })?;
+
+    let resources = bundle_path.join("Contents/Resources");
+    let candidates = if Path::new(icon_name).extension().is_some() {
+        vec![resources.join(icon_name)]
+    } else {
+        vec![
+            resources.join(format!("{icon_name}.icns")),
+            resources.join(icon_name),
+        ]
+    };
+
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 struct RelatedAppData {

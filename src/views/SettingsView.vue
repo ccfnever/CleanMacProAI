@@ -162,10 +162,11 @@ async function openFullDiskAccess() {
 
 .settings-hero,
 .panel {
-  border: 1px solid rgba(35, 52, 45, 0.09);
+  border: 1px solid rgba(238, 249, 255, 0.16);
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 18px 52px rgba(28, 49, 42, 0.08);
+  background: rgba(40, 62, 119, 0.3);
+  box-shadow: 0 18px 52px rgba(22, 41, 88, 0.18);
+  backdrop-filter: blur(16px);
 }
 
 .settings-hero {
@@ -174,7 +175,7 @@ async function openFullDiskAccess() {
 
 .section-kicker {
   margin: 0 0 8px;
-  color: #1f8b72;
+  color: rgba(216, 204, 255, 0.92);
   font-size: 12px;
   font-weight: 850;
   letter-spacing: 0.08em;
@@ -185,12 +186,13 @@ h1 {
   margin: 0;
   font-size: 40px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 .settings-hero p:not(.section-kicker),
 .panel-head p {
   margin: 8px 0 0;
-  color: #687871;
+  color: rgba(235, 248, 255, 0.7);
 }
 
 .settings-grid {
@@ -225,14 +227,15 @@ h1 {
   width: 38px;
   height: 38px;
   border-radius: 12px;
-  background: rgba(31, 139, 114, 0.12);
-  color: #1f8b72;
+  background: rgba(216, 204, 255, 0.14);
+  color: #ded5ff;
   font-size: 20px;
 }
 
 .panel h3 {
   margin: 0;
   font-size: 18px;
+  color: #fff;
 }
 
 .setting-row,
@@ -243,13 +246,14 @@ h1 {
   justify-content: space-between;
   gap: 18px;
   padding: 16px 0;
-  border-top: 1px solid rgba(35, 52, 45, 0.08);
+  border-top: 1px solid rgba(238, 249, 255, 0.12);
 }
 
 .setting-row strong,
 .select-row strong {
   display: block;
   font-size: 14px;
+  color: #fff;
 }
 
 .setting-row small,
@@ -257,21 +261,22 @@ h1 {
 .permission-box small {
   display: block;
   margin-top: 4px;
-  color: #73827c;
+  color: rgba(235, 248, 255, 0.62);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .permission-box {
   padding: 16px;
-  border-top: 1px solid rgba(35, 52, 45, 0.08);
+  border-top: 1px solid rgba(238, 249, 255, 0.12);
   border-radius: 14px;
-  background: #f5f7f6;
+  background: rgba(235, 248, 255, 0.1);
 }
 
 .permission-box strong {
   display: block;
   font-size: 14px;
+  color: #fff;
 }
 
 .permission-box button {
@@ -279,9 +284,10 @@ h1 {
   padding: 0 14px;
   border: 0;
   border-radius: 11px;
-  background: #172026;
-  color: #fff;
+  background: #ffffff;
+  color: #4d4b85;
   font-weight: 850;
+  box-shadow: 0 16px 34px rgba(20, 48, 91, 0.18);
 }
 
 input[type="checkbox"] {
@@ -289,7 +295,7 @@ input[type="checkbox"] {
   height: 24px;
   appearance: none;
   border-radius: 999px;
-  background: #cad5d0;
+  background: rgba(235, 248, 255, 0.28);
   position: relative;
   transition: background 180ms ease;
 }
@@ -307,7 +313,7 @@ input[type="checkbox"]::after {
 }
 
 input[type="checkbox"]:checked {
-  background: #1f8b72;
+  background: #8d7cff;
 }
 
 input[type="checkbox"]:checked::after {
@@ -318,11 +324,15 @@ select {
   min-width: 132px;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(35, 52, 45, 0.14);
+  border: 1px solid rgba(238, 249, 255, 0.18);
   border-radius: 10px;
-  background: #f6f8f7;
-  color: #172026;
+  background: rgba(235, 248, 255, 0.14);
+  color: #fff;
   outline: 0;
+}
+
+select option {
+  color: #172026;
 }
 
 .about-grid {
@@ -334,12 +344,12 @@ select {
 .about-grid div {
   padding: 16px;
   border-radius: 14px;
-  background: #f5f7f6;
+  background: rgba(235, 248, 255, 0.1);
 }
 
 .about-grid small {
   display: block;
-  color: #73827c;
+  color: rgba(235, 248, 255, 0.62);
   font-weight: 800;
 }
 
@@ -347,5 +357,6 @@ select {
   display: block;
   margin-top: 6px;
   font-size: 17px;
+  color: #fff;
 }
 </style>

@@ -23,6 +23,12 @@ const currentTitle = computed(() => {
   return titles[currentView.value];
 });
 
+const stageClass = computed(() => [
+  "content-stage",
+  `view-${currentView.value}`,
+  { "uninstaller-stage": currentView.value === "uninstaller" },
+]);
+
 function navigate(view: string) {
   if (["dashboard", "scanner", "uninstaller", "settings"].includes(view)) {
     currentView.value = view as ViewName;
@@ -44,7 +50,7 @@ onMounted(async () => {
       :data-source="dataSource"
     />
 
-    <main :class="['content-stage', { 'uninstaller-stage': currentView === 'uninstaller' }]">
+    <main :class="stageClass">
       <header v-if="currentView !== 'uninstaller'" class="topbar">
         <div>
           <p class="eyebrow">CleanMacProAI / {{ dataSource === "native" ? "Native" : "Demo" }}</p>
@@ -56,20 +62,41 @@ onMounted(async () => {
         </div>
       </header>
 
-      <DashboardView
-        v-if="currentView === 'dashboard'"
-        :disk-info="diskInfo"
-        :data-source="dataSource"
-        @navigate="navigate"
-      />
-      <ScannerView v-else-if="currentView === 'scanner'" />
-      <UninstallerView v-else-if="currentView === 'uninstaller'" />
-      <SettingsView v-else-if="currentView === 'settings'" />
+      <Transition name="view-fade" mode="out-in">
+        <DashboardView
+          v-if="currentView === 'dashboard'"
+          key="dashboard"
+          :disk-info="diskInfo"
+          :data-source="dataSource"
+          @navigate="navigate"
+        />
+        <ScannerView v-else-if="currentView === 'scanner'" key="scanner" />
+        <UninstallerView v-else-if="currentView === 'uninstaller'" key="uninstaller" />
+        <SettingsView v-else-if="currentView === 'settings'" key="settings" />
+      </Transition>
     </main>
   </div>
 </template>
 
 <style>
+@property --stage-top {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: rgba(92, 166, 207, 0.94);
+}
+
+@property --stage-bottom {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: rgba(65, 70, 132, 0.98);
+}
+
+@property --stage-glow {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: rgba(136, 220, 255, 0.2);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -86,9 +113,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   color: #172026;
-  background:
-    radial-gradient(circle at 10% 0%, rgba(36, 137, 114, 0.16), transparent 30%),
-    linear-gradient(145deg, #f6f8f7 0%, #edf2f1 45%, #f8f5ef 100%);
+  background: #4d6f9e;
 }
 
 button,
@@ -110,9 +135,48 @@ button {
 }
 
 .content-stage {
+  --stage-top: rgba(92, 166, 207, 0.94);
+  --stage-bottom: rgba(65, 70, 132, 0.98);
+  --stage-glow: rgba(136, 220, 255, 0.2);
+  --stage-bg:
+    radial-gradient(circle at 15% 4%, var(--stage-glow), transparent 34%),
+    linear-gradient(180deg, var(--stage-top), var(--stage-bottom));
   flex: 1;
   overflow-y: auto;
   padding: 28px 34px 40px;
+  color: #ecf8ff;
+  background: var(--stage-bg);
+  background-size: 140% 140%;
+  animation: stage-drift 14s ease-in-out infinite alternate;
+  transition:
+    --stage-top 560ms ease,
+    --stage-bottom 560ms ease,
+    --stage-glow 560ms ease,
+    color 320ms ease;
+}
+
+.content-stage.view-dashboard {
+  --stage-top: rgba(74, 164, 187, 0.96);
+  --stage-bottom: rgba(62, 72, 139, 0.98);
+  --stage-glow: rgba(138, 228, 207, 0.24);
+}
+
+.content-stage.view-scanner {
+  --stage-top: rgba(77, 148, 186, 0.96);
+  --stage-bottom: rgba(55, 87, 128, 0.98);
+  --stage-glow: rgba(255, 219, 124, 0.2);
+}
+
+.content-stage.view-settings {
+  --stage-top: rgba(91, 136, 190, 0.96);
+  --stage-bottom: rgba(75, 65, 134, 0.98);
+  --stage-glow: rgba(201, 176, 255, 0.22);
+}
+
+.content-stage.view-uninstaller {
+  --stage-top: rgba(92, 166, 207, 0.94);
+  --stage-bottom: rgba(65, 70, 132, 0.98);
+  --stage-glow: rgba(133, 221, 255, 0.18);
 }
 
 .content-stage.uninstaller-stage {
@@ -127,17 +191,19 @@ button {
   gap: 20px;
   margin: 0 auto 22px;
   max-width: 1180px;
+  color: rgba(239, 250, 255, 0.92);
 }
 
 .topbar h2 {
   margin: 3px 0 0;
   font-size: 28px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 .eyebrow {
   margin: 0;
-  color: #6f7d77;
+  color: rgba(235, 248, 255, 0.62);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -150,14 +216,40 @@ button {
   gap: 8px;
   min-height: 38px;
   padding: 0 14px;
-  border: 1px solid rgba(23, 32, 38, 0.09);
+  border: 1px solid rgba(238, 249, 255, 0.18);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #395047;
+  background: rgba(28, 73, 109, 0.36);
+  color: rgba(239, 250, 255, 0.9);
   font-size: 13px;
   font-weight: 700;
-  box-shadow: 0 16px 40px rgba(28, 49, 42, 0.08);
+  box-shadow: 0 16px 40px rgba(22, 41, 88, 0.14);
   backdrop-filter: blur(18px);
+}
+
+.view-fade-enter-active,
+.view-fade-leave-active {
+  transition: opacity 220ms ease, transform 260ms ease, filter 260ms ease;
+}
+
+.view-fade-enter-from {
+  opacity: 0;
+  filter: blur(6px);
+  transform: translateY(10px);
+}
+
+.view-fade-leave-to {
+  opacity: 0;
+  filter: blur(4px);
+  transform: translateY(-8px);
+}
+
+@keyframes stage-drift {
+  from {
+    background-position: 0% 0%;
+  }
+  to {
+    background-position: 100% 100%;
+  }
 }
 
 ::-webkit-scrollbar {

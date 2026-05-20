@@ -223,10 +223,11 @@ async function cleanSelected() {
 .category-card,
 .empty-state,
 .report-panel {
-  border: 1px solid rgba(35, 52, 45, 0.09);
+  border: 1px solid rgba(238, 249, 255, 0.16);
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 18px 52px rgba(28, 49, 42, 0.08);
+  background: rgba(28, 73, 109, 0.3);
+  box-shadow: 0 18px 52px rgba(22, 41, 88, 0.16);
+  backdrop-filter: blur(16px);
 }
 
 .scan-command {
@@ -239,7 +240,7 @@ async function cleanSelected() {
 
 .section-kicker {
   margin: 0 0 8px;
-  color: #1f8b72;
+  color: rgba(171, 247, 232, 0.92);
   font-size: 12px;
   font-weight: 850;
   letter-spacing: 0.08em;
@@ -250,6 +251,7 @@ h1 {
   margin: 0;
   font-size: 42px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 .scan-command p:not(.section-kicker),
@@ -257,7 +259,7 @@ h1 {
 .report-panel p {
   max-width: 660px;
   margin: 10px 0 0;
-  color: #687871;
+  color: rgba(235, 248, 255, 0.72);
   line-height: 1.75;
 }
 
@@ -271,9 +273,16 @@ h1 {
   padding: 0 18px;
   border: 0;
   border-radius: 12px;
-  background: #172026;
-  color: #fff;
+  background: #ffffff;
+  color: #315c7d;
   font-weight: 850;
+  box-shadow: 0 16px 34px rgba(20, 48, 91, 0.18);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.primary-action:hover,
+.summary-panel button:hover {
+  transform: translateY(-1px);
 }
 
 .primary-action:disabled,
@@ -297,25 +306,26 @@ h1 {
 .progress-copy {
   font-size: 14px;
   font-weight: 850;
+  color: #fff;
 }
 
 .progress-track {
   height: 10px;
   margin: 12px 0;
   border-radius: 999px;
-  background: #dfe8e4;
+  background: rgba(235, 248, 255, 0.22);
   overflow: hidden;
 }
 
 .progress-track div {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #1f8b72, #2c6f98);
+  background: linear-gradient(90deg, #53d8d1, #9ae6ff);
   transition: width 240ms ease;
 }
 
 .phase-row {
-  color: #7b8984;
+  color: rgba(235, 248, 255, 0.62);
   font-size: 12px;
   font-weight: 750;
 }
@@ -324,8 +334,8 @@ h1 {
   margin: 14px 0 0;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(216, 135, 47, 0.12);
-  color: #83511f;
+  background: rgba(255, 215, 92, 0.18);
+  color: #fff4bf;
   font-size: 13px;
   font-weight: 750;
 }
@@ -346,7 +356,7 @@ h1 {
 
 .summary-panel p {
   margin: 0;
-  color: #7b8984;
+  color: rgba(235, 248, 255, 0.62);
   font-size: 13px;
   font-weight: 850;
 }
@@ -356,12 +366,13 @@ h1 {
   margin-top: 8px;
   font-size: 34px;
   letter-spacing: 0;
+  color: #fff;
 }
 
 .summary-panel > span {
   display: block;
   margin: 4px 0 18px;
-  color: #6f7d77;
+  color: rgba(235, 248, 255, 0.68);
   font-size: 13px;
 }
 
@@ -379,8 +390,8 @@ h1 {
 .risk-summary small {
   padding: 9px 6px;
   border-radius: 10px;
-  background: #f3f6f4;
-  color: #53625c;
+  background: rgba(235, 248, 255, 0.12);
+  color: rgba(235, 248, 255, 0.84);
   font-size: 12px;
   font-weight: 850;
   text-align: center;
@@ -396,7 +407,8 @@ h1 {
 }
 
 .category-card.selected {
-  border-color: rgba(31, 139, 114, 0.42);
+  border-color: rgba(83, 216, 209, 0.52);
+  background: rgba(44, 109, 139, 0.36);
 }
 
 .category-main {
@@ -415,7 +427,7 @@ h1 {
 .checkmark {
   width: 28px;
   height: 28px;
-  border: 2px solid #c5d1cc;
+  border: 2px solid rgba(221, 239, 251, 0.58);
   border-radius: 9px;
   display: grid;
   place-items: center;
@@ -423,26 +435,27 @@ h1 {
 }
 
 .selected .checkmark {
-  border-color: #1f8b72;
-  background: #1f8b72;
+  border-color: #53d8d1;
+  background: #35c8c0;
 }
 
 .high .checkmark {
-  background: #e8ecea;
-  color: #778680;
+  background: rgba(235, 248, 255, 0.12);
+  color: rgba(235, 248, 255, 0.62);
 }
 
 .category-copy strong,
 .category-meta b {
   display: block;
   font-size: 15px;
+  color: #fff;
 }
 
 .category-copy small,
 .category-meta small {
   display: block;
   margin-top: 4px;
-  color: #708079;
+  color: rgba(235, 248, 255, 0.62);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -456,21 +469,21 @@ h1 {
   min-width: 64px;
   padding: 6px 8px;
   border-radius: 999px;
-  background: rgba(31, 139, 114, 0.11);
-  color: #1f6f5e;
+  background: rgba(83, 216, 209, 0.14);
+  color: #bffaf6;
   font-size: 12px;
   font-weight: 900;
   text-align: center;
 }
 
 .medium .risk-pill {
-  background: rgba(216, 135, 47, 0.14);
-  color: #916024;
+  background: rgba(255, 215, 92, 0.16);
+  color: #fff2ad;
 }
 
 .high .risk-pill {
-  background: rgba(214, 69, 69, 0.12);
-  color: #a43838;
+  background: rgba(255, 122, 140, 0.14);
+  color: #ffd4db;
 }
 
 .preview-head {
@@ -483,7 +496,7 @@ h1 {
   gap: 5px;
   border: 0;
   background: transparent;
-  color: #53625c;
+  color: rgba(235, 248, 255, 0.7);
   font-size: 12px;
   font-weight: 850;
 }
@@ -500,8 +513,8 @@ h1 {
   gap: 16px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: #f5f7f6;
-  color: #50605a;
+  background: rgba(235, 248, 255, 0.1);
+  color: rgba(235, 248, 255, 0.82);
   font-size: 12px;
 }
 
@@ -520,12 +533,13 @@ h1 {
 }
 
 .empty-state > span {
-  color: #1f8b72;
+  color: #6ce6dd;
   font-size: 44px;
 }
 
 .empty-state h3 {
   margin: 14px 0 0;
+  color: #fff;
 }
 
 .report-panel {
@@ -537,11 +551,12 @@ h1 {
 }
 
 .report-panel > span {
-  color: #1f8b72;
+  color: #6ce6dd;
   font-size: 24px;
 }
 
 .report-panel strong {
   font-size: 16px;
+  color: #fff;
 }
 </style>

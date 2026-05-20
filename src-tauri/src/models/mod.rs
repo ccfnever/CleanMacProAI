@@ -87,6 +87,8 @@ pub struct InstalledApp {
     pub bundle_id: String,
     /// 应用路径
     pub app_path: String,
+    /// 应用图标路径（通常为 .app/Contents/Resources/*.icns）
+    pub icon_path: Option<String>,
     /// 应用大小（字节）
     pub app_size: u64,
     /// 关联文件总大小（缓存、日志、偏好设置等）

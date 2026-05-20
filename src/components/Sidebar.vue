@@ -19,41 +19,15 @@ const navSections = [
   },
   {
     title: "清理",
-    items: [
-      { id: "dashboard", label: "系统垃圾", icon: "◷" },
-      { id: "mail", label: "邮件附件", icon: "□" },
-      { id: "trash", label: "废纸篓", icon: "▿" },
-    ],
-  },
-  {
-    title: "保护",
-    items: [
-      { id: "malware", label: "移除恶意软件", icon: "⌘" },
-      { id: "privacy", label: "隐私", icon: "◴" },
-    ],
-  },
-  {
-    title: "速度",
-    items: [
-      { id: "optimize", label: "优化", icon: "≡" },
-      { id: "settings", label: "维护", icon: "⌕" },
-    ],
+    items: [{ id: "dashboard", label: "概览", icon: "◷" }],
   },
   {
     title: "应用程序",
-    items: [
-      { id: "uninstaller", label: "卸载器", icon: "△" },
-      { id: "updater", label: "更新程序", icon: "↻" },
-      { id: "extensions", label: "扩展", icon: "⊞" },
-    ],
+    items: [{ id: "uninstaller", label: "卸载器", icon: "△" }],
   },
   {
-    title: "文件",
-    items: [
-      { id: "space", label: "空间透镜", icon: "◌" },
-      { id: "large", label: "大型和旧文件", icon: "▭" },
-      { id: "shredder", label: "碎纸机", icon: "▥" },
-    ],
+    title: "偏好",
+    items: [{ id: "settings", label: "设置", icon: "⚙" }],
   },
 ];
 
