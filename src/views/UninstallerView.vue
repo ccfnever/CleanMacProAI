@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   demoApps,
   demoCleanReport,
@@ -48,9 +48,11 @@ const selectedChildKeys = ref<Set<string>>(new Set());
 const excludedChildKeys = ref<Set<string>>(new Set());
 const failedIconPaths = ref<Set<string>>(new Set());
 const expandedBundleIds = ref<Set<string>>(new Set());
+const isAutoScanning = ref(false);
+const autoScanCompletedCount = ref(0);
 const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
-let inspectRequestId = 0;
+let isUnmounted = false;
 
 const filteredApps = computed(() => {
   const keyword = query.value.trim().toLowerCase();
@@ -64,7 +66,7 @@ const filteredApps = computed(() => {
         app.app_path.toLowerCase().includes(keyword)
       );
     })
-    .sort((a, b) => appTotalSize(b) - appTotalSize(a));
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 });
 
 const selectedApps = computed(() =>
@@ -75,9 +77,19 @@ const selectedTotal = computed(() =>
   selectedApps.value.reduce((sum, app) => sum + appTotalSize(app), 0),
 );
 
-const totalAppsSize = computed(() =>
-  apps.value.reduce((sum, app) => sum + appTotalSize(app), 0),
+const filteredTotalSize = computed(() =>
+  filteredApps.value.reduce((sum, app) => sum + appTotalSize(app), 0),
 );
+
+const listSizeLabel = computed(() => {
+  if (filteredTotalSize.value <= 0) return "";
+  return ` · ${formatBytes(filteredTotalSize.value)}`;
+});
+
+const scanProgressLabel = computed(() => {
+  if (!isAutoScanning.value) return "";
+  return ` · 正在统计 ${autoScanCompletedCount.value}/${apps.value.length}`;
+});
 
 const facetSections = computed(() => {
   const appStoreCount = apps.value.filter((app) => appSource(app) === "app_store").length;
@@ -325,16 +337,34 @@ onMounted(async () => {
   expandedBundleIds.value = new Set(result.data.slice(0, 1).map((app) => app.bundle_id));
   notice.value = result.source === "demo" ? "应用枚举命令尚未返回真实列表，当前展示可交互 Demo 数据。" : null;
   isLoading.value = false;
-  if (result.data[0]) void inspectApp(result.data[0].bundle_id);
+  void scanAppsInDisplayOrder(result.data);
 });
 
+onUnmounted(() => {
+  isUnmounted = true;
+});
+
+async function scanAppsInDisplayOrder(appList: InstalledApp[]) {
+  isAutoScanning.value = true;
+  autoScanCompletedCount.value = 0;
+  const queue = [...appList].sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+
+  for (const app of queue) {
+    if (isUnmounted) return;
+    await inspectApp(app.bundle_id);
+    if (isUnmounted) return;
+    autoScanCompletedCount.value += 1;
+  }
+
+  isAutoScanning.value = false;
+}
+
 async function inspectApp(bundleId: string) {
-  if (!bundleId) return;
+  if (!bundleId) return null;
 
   const current = apps.value.find((app) => app.bundle_id === bundleId);
-  if (!current || current.related_files.length > 0 || current.app_size > 0) return;
+  if (!current || current.related_files.length > 0 || current.app_size > 0) return current ?? null;
 
-  const requestId = ++inspectRequestId;
   inspectingBundleId.value = bundleId;
   const result = await invokeOrDemo<InstalledApp>(
     "inspect_installed_app",
@@ -346,13 +376,14 @@ async function inspectApp(bundleId: string) {
     60000,
   );
 
-  if (requestId !== inspectRequestId) return;
-
   apps.value = apps.value.map((app) => (app.bundle_id === bundleId ? result.data : app));
   if (result.source === "demo") {
     notice.value = "当前环境无法读取该应用详情，已保留快速列表数据。";
   }
-  inspectingBundleId.value = null;
+  if (inspectingBundleId.value === bundleId) {
+    inspectingBundleId.value = null;
+  }
+  return result.data;
 }
 
 function setFacet(item: FacetItem) {
@@ -474,7 +505,10 @@ async function uninstallSelected() {
         <p v-if="notice" class="notice">{{ notice }}</p>
 
         <div class="list-toolbar">
-          <span>{{ filteredApps.length }} 个应用程序</span>
+          <span class="list-count">
+            {{ filteredApps.length }} 个应用程序{{ listSizeLabel }}{{ scanProgressLabel }}
+            <span v-if="isAutoScanning" class="scan-spinner" aria-label="正在统计"></span>
+          </span>
           <button type="button">排序方式按 名称⌄</button>
         </div>
 
@@ -571,7 +605,7 @@ async function uninstallSelected() {
       >
         {{ isUninstalling ? "卸载中" : "卸载" }}
       </button>
-      <span>{{ selectedTotal > 0 ? formatBytes(selectedTotal) : formatBytes(totalAppsSize) }}</span>
+      <span>{{ selectedTotal > 0 ? formatBytes(selectedTotal) : "0 GB" }}</span>
     </footer>
 
     <div v-if="uninstallReport" class="report-panel">
@@ -589,7 +623,7 @@ async function uninstallSelected() {
   position: relative;
   min-height: 100vh;
   margin: 0;
-  padding: 0 0 86px;
+  padding: 0 0 64px;
   overflow: hidden;
   border-left: 1px solid rgba(207, 228, 247, 0.18);
   border-radius: 0;
@@ -605,10 +639,10 @@ async function uninstallSelected() {
   grid-template-columns: 32px 1fr auto 264px 104px;
   align-items: center;
   gap: 14px;
-  height: 58px;
-  padding: 10px 18px 0 26px;
+  height: 48px;
+  padding: 7px 18px 0 24px;
   color: rgba(233, 247, 255, 0.76);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 800;
 }
 
@@ -633,7 +667,7 @@ async function uninstallSelected() {
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 40px;
+  height: 34px;
   padding: 0 16px;
   border-radius: 10px;
   background: rgba(39, 80, 112, 0.54);
@@ -659,7 +693,7 @@ async function uninstallSelected() {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  height: 36px;
+  height: 32px;
   border: 0;
   border-radius: 999px;
   background: rgba(35, 79, 111, 0.68);
@@ -677,9 +711,9 @@ async function uninstallSelected() {
 
 .uninstaller-body {
   display: grid;
-  grid-template-columns: minmax(230px, 300px) minmax(520px, 1fr);
-  gap: clamp(28px, 4vw, 70px);
-  padding: 8px 42px 0 28px;
+  grid-template-columns: minmax(210px, 282px) minmax(500px, 1fr);
+  gap: clamp(20px, 3.2vw, 54px);
+  padding: 6px 34px 0 26px;
 }
 
 .facet-panel {
@@ -688,14 +722,14 @@ async function uninstallSelected() {
 
 .facet-section {
   display: grid;
-  gap: 4px;
-  margin-bottom: 22px;
+  gap: 2px;
+  margin-bottom: 13px;
 }
 
 .facet-section p {
-  margin: 0 0 6px 14px;
+  margin: 0 0 4px 12px;
   color: rgba(211, 232, 246, 0.46);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 900;
 }
 
@@ -703,13 +737,14 @@ async function uninstallSelected() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 29px;
+  padding: 0 10px;
   border: 0;
   border-radius: 18px;
   background: transparent;
   color: inherit;
   text-align: left;
+  font-size: 13px;
   font-weight: 850;
 }
 
@@ -723,7 +758,7 @@ async function uninstallSelected() {
 }
 
 .facet-item strong {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .apps-panel {
@@ -735,32 +770,32 @@ async function uninstallSelected() {
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .apps-head h1 {
   margin: 0;
   color: #fff;
-  font-size: 32px;
+  font-size: 28px;
   line-height: 1.1;
   letter-spacing: 0;
 }
 
 .apps-head p {
-  margin: 12px 0 0;
+  margin: 8px 0 0;
   color: rgba(235, 248, 255, 0.74);
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 750;
 }
 
 .select-visible,
 .list-toolbar button {
-  min-height: 34px;
+  min-height: 30px;
   border: 0;
   border-radius: 999px;
   background: rgba(39, 80, 112, 0.35);
   color: rgba(239, 250, 255, 0.78);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 850;
 }
 
@@ -769,12 +804,12 @@ async function uninstallSelected() {
 }
 
 .notice {
-  margin: 16px 0 0;
-  padding: 10px 12px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
   border-radius: 12px;
   background: rgba(255, 215, 92, 0.18);
   color: #fff4bf;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -782,10 +817,26 @@ async function uninstallSelected() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 38px 0 16px;
+  margin: 24px 0 10px;
   color: rgba(235, 248, 255, 0.64);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 850;
+}
+
+.list-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scan-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background:
+    conic-gradient(from 0deg, #53d8d1, #9ae6ff, rgba(154, 230, 255, 0.12), #53d8d1);
+  mask: radial-gradient(circle, transparent 48%, #000 52%);
+  animation: scan-spin 780ms linear infinite;
 }
 
 .list-toolbar button {
@@ -802,7 +853,7 @@ async function uninstallSelected() {
 }
 
 .app-tree {
-  max-height: calc(100vh - 238px);
+  max-height: calc(100vh - 190px);
   padding-right: 14px;
   overflow: auto;
 }
@@ -813,10 +864,10 @@ async function uninstallSelected() {
 
 .app-main {
   display: grid;
-  grid-template-columns: 30px 1fr 26px 110px;
+  grid-template-columns: 26px 1fr 22px 92px;
   align-items: center;
-  gap: 12px;
-  min-height: 58px;
+  gap: 10px;
+  min-height: 46px;
   color: rgba(245, 251, 255, 0.93);
   font-weight: 900;
 }
@@ -824,7 +875,7 @@ async function uninstallSelected() {
 .expand-hit {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
   border: 0;
   background: transparent;
@@ -844,8 +895,8 @@ async function uninstallSelected() {
 .app-icon,
 .app-logo {
   flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
 }
 
 .app-icon-wrap {
@@ -857,7 +908,7 @@ async function uninstallSelected() {
 .app-logo {
   display: grid;
   place-items: center;
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .app-icon {
@@ -875,13 +926,13 @@ async function uninstallSelected() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: 2px solid rgba(221, 239, 251, 0.58);
   border-radius: 50%;
   background: transparent;
   color: transparent;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
   font-weight: 950;
   transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
@@ -901,15 +952,15 @@ async function uninstallSelected() {
 }
 
 .selection-dot.small {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-width: 1.5px;
   font-size: 10px;
 }
 
 .selection-dot.tiny {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-width: 1.5px;
   font-size: 9px;
 }
@@ -921,44 +972,44 @@ async function uninstallSelected() {
 
 .chevron {
   color: rgba(235, 248, 255, 0.78);
-  font-size: 28px;
+  font-size: 22px;
 }
 
 .row-size {
   color: rgba(235, 248, 255, 0.74);
-  font-size: 15px;
+  font-size: 13px;
 }
 
 .file-tree {
-  margin: -2px 0 12px 74px;
+  margin: -2px 0 8px 62px;
 }
 
 .file-group {
   display: grid;
-  gap: 6px;
-  margin: 8px 0 12px;
+  gap: 4px;
+  margin: 6px 0 8px;
 }
 
 .group-row,
 .file-row {
   display: grid;
   align-items: center;
-  gap: 12px;
-  min-height: 34px;
+  gap: 10px;
+  min-height: 28px;
 }
 
 .group-row {
-  grid-template-columns: 24px 28px 1fr 94px;
+  grid-template-columns: 22px 24px 1fr 82px;
   color: rgba(246, 252, 255, 0.92);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 900;
 }
 
 .file-row {
-  grid-template-columns: 24px 28px 1fr 94px;
-  padding-left: 38px;
+  grid-template-columns: 22px 24px 1fr 82px;
+  padding-left: 30px;
   color: rgba(238, 249, 255, 0.86);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 850;
 }
 
@@ -973,9 +1024,9 @@ async function uninstallSelected() {
 .file-icon {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   background: linear-gradient(180deg, #47d2ff, #0792d9);
   color: #dff9ff;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
@@ -993,31 +1044,32 @@ async function uninstallSelected() {
 }
 
 .bottom-bar {
-  position: absolute;
+  position: fixed;
   right: 0;
   bottom: 0;
-  left: 300px;
+  left: 260px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 18px;
-  height: 86px;
+  height: 64px;
   background: rgba(49, 53, 122, 0.45);
   color: rgba(230, 242, 255, 0.76);
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 850;
   backdrop-filter: blur(14px);
 }
 
 .uninstall-orb {
-  width: 86px;
-  height: 86px;
-  margin-top: -28px;
-  border: 4px solid #ff6f9f;
+  width: 64px;
+  height: 64px;
+  margin-top: -18px;
+  border: 3px solid #ff6f9f;
   border-radius: 50%;
   background: rgba(116, 146, 190, 0.86);
   color: #fff;
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 950;
   box-shadow: 0 0 0 4px rgba(255, 117, 166, 0.22), 0 18px 42px rgba(28, 32, 78, 0.32);
 }
@@ -1030,7 +1082,7 @@ async function uninstallSelected() {
 .report-panel {
   position: absolute;
   right: 28px;
-  bottom: 100px;
+  bottom: 76px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1056,7 +1108,13 @@ async function uninstallSelected() {
   }
 
   .bottom-bar {
-    left: 0;
+    left: 260px;
+  }
+}
+
+@keyframes scan-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

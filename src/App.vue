@@ -29,6 +29,10 @@ const stageClass = computed(() => [
   { "uninstaller-stage": currentView.value === "uninstaller" },
 ]);
 
+const viewTransitionName = computed(() =>
+  currentView.value === "uninstaller" ? "view-fade-flat" : "view-fade",
+);
+
 function navigate(view: string) {
   if (["dashboard", "scanner", "uninstaller", "settings"].includes(view)) {
     currentView.value = view as ViewName;
@@ -62,7 +66,7 @@ onMounted(async () => {
         </div>
       </header>
 
-      <Transition name="view-fade" mode="out-in">
+      <Transition :name="viewTransitionName" mode="out-in">
         <DashboardView
           v-if="currentView === 'dashboard'"
           key="dashboard"
@@ -241,6 +245,16 @@ button {
   opacity: 0;
   filter: blur(4px);
   transform: translateY(-8px);
+}
+
+.view-fade-flat-enter-active,
+.view-fade-flat-leave-active {
+  transition: opacity 180ms ease;
+}
+
+.view-fade-flat-enter-from,
+.view-fade-flat-leave-to {
+  opacity: 0;
 }
 
 @keyframes stage-drift {
