@@ -175,14 +175,15 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
         }
     };
     let app_path = path.to_string_lossy().to_string();
-    let icon_path = app_icon_path(path, dictionary);
+    let icon = app_icon_asset(path, &bundle_id, dictionary);
     let is_system_app = app_path.starts_with("/System/");
 
     Some(InstalledApp {
         name,
         bundle_id,
         app_path,
-        icon_path,
+        icon_path: icon.as_ref().map(|asset| asset.path.clone()),
+        icon_data_url: icon.and_then(|asset| asset.data_url),
         app_size,
         related_size: related.total_size,
         related_count: related.total_count,
@@ -191,7 +192,16 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
     })
 }
 
-fn app_icon_path(bundle_path: &Path, dictionary: &plist::Dictionary) -> Option<String> {
+struct IconAsset {
+    path: String,
+    data_url: Option<String>,
+}
+
+fn app_icon_asset(
+    bundle_path: &Path,
+    bundle_id: &str,
+    dictionary: &plist::Dictionary,
+) -> Option<IconAsset> {
     let icon_name = dictionary
         .get("CFBundleIconFile")
         .and_then(Value::as_string)
@@ -216,10 +226,101 @@ fn app_icon_path(bundle_path: &Path, dictionary: &plist::Dictionary) -> Option<S
         ]
     };
 
-    candidates
-        .into_iter()
-        .find(|path| path.exists())
-        .map(|path| path.to_string_lossy().to_string())
+    let source = candidates.into_iter().find(|path| path.exists())?;
+    let extension = source.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+
+    let display_path = if extension.eq_ignore_ascii_case("icns") {
+        convert_icns_to_png(&source, bundle_id).unwrap_or_else(|| source.clone())
+    } else {
+        source
+    };
+
+    Some(IconAsset {
+        data_url: image_data_url(&display_path),
+        path: display_path.to_string_lossy().to_string(),
+    })
+}
+
+fn convert_icns_to_png(source: &Path, bundle_id: &str) -> Option<PathBuf> {
+    let cache_root = dirs::cache_dir()
+        .or_else(dirs::data_local_dir)?
+        .join("CleanMacProAI")
+        .join("app-icons");
+
+    fs::create_dir_all(&cache_root).ok()?;
+
+    let file_name = format!("{}.png", safe_file_stem(bundle_id));
+    let output = cache_root.join(file_name);
+
+    if output.exists() {
+        return Some(output);
+    }
+
+    let status = Command::new("sips")
+        .args(["-s", "format", "png"])
+        .arg(source)
+        .arg("--out")
+        .arg(&output)
+        .status()
+        .ok()?;
+
+    if status.success() && output.exists() {
+        Some(output)
+    } else {
+        None
+    }
+}
+
+fn image_data_url(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    let mime = match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("png") => "image/png",
+        Some(ext) if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") => "image/jpeg",
+        Some(ext) if ext.eq_ignore_ascii_case("gif") => "image/gif",
+        _ => return None,
+    };
+
+    Some(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = *chunk.get(1).unwrap_or(&0);
+        let third = *chunk.get(2).unwrap_or(&0);
+        let triple = ((first as u32) << 16) | ((second as u32) << 8) | third as u32;
+
+        output.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
+        output.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(triple & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+
+    output
+}
+
+fn safe_file_stem(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 struct RelatedAppData {

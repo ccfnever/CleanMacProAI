@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   demoApps,
@@ -156,13 +155,15 @@ function appInitial(app: InstalledApp): string {
 }
 
 function appIconSrc(app: InstalledApp): string | null {
-  if (!app.icon_path || failedIconPaths.value.has(app.icon_path)) return null;
-  return convertFileSrc(app.icon_path);
+  const source = app.icon_data_url || app.icon_path;
+  if (!source || failedIconPaths.value.has(source)) return null;
+  return source;
 }
 
 function markIconFailed(app: InstalledApp) {
-  if (!app.icon_path) return;
-  failedIconPaths.value = new Set([...failedIconPaths.value, app.icon_path]);
+  const source = app.icon_data_url || app.icon_path;
+  if (!source) return;
+  failedIconPaths.value = new Set([...failedIconPaths.value, source]);
 }
 
 function iconTone(app: InstalledApp): string {
