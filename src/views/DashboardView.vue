@@ -45,7 +45,7 @@ const riskRows = computed(() => [
     <div class="hero-panel">
       <div class="hero-copy">
         <p class="section-kicker">安全清理控制台</p>
-        <h1>先看清楚，再释放空间。</h1>
+        <h1>给磁盘做一次大扫除吧。</h1>
         <p>
           当前 demo 已把磁盘状态、风险分层、扫描结果和应用残留串成完整路径。
           {{ dataSource === "native" ? "容量信息已来自本机。" : "现在处于浏览器 Demo 模式。" }}
@@ -171,7 +171,7 @@ h1 {
   max-width: 680px;
   margin: 0;
   color: #fff;
-  font-size: 46px;
+  font-size: 38px;
   line-height: 1.04;
   letter-spacing: 0;
 }

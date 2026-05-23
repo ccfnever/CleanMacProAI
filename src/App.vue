@@ -16,7 +16,7 @@ const dataSource = ref<"native" | "demo">("demo");
 const currentTitle = computed(() => {
   const titles: Record<ViewName, string> = {
     dashboard: "Mac 概览",
-    scanner: "智能清理",
+    scanner: "智能扫描",
     uninstaller: "应用卸载",
     settings: "设置",
   };
