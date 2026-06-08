@@ -364,6 +364,7 @@ fn related_app_data(name: &str, bundle_id: &str) -> RelatedAppData {
                     .and_then(|metadata| metadata.modified().ok())
                     .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|duration| duration.as_secs().to_string()),
+                is_dir: path.is_dir(),
             });
         }
     }

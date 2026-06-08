@@ -28,7 +28,7 @@ pub struct CategoryResult {
     pub file_count: u64,
     /// 总大小（字节）
     pub total_size: u64,
-    /// 具体文件列表（预览，最多 20 条）
+    /// 分类根路径下的一级文件夹/文件明细，按大小降序排列
     pub files: Vec<FileInfo>,
 }
 
@@ -40,6 +40,8 @@ pub struct FileInfo {
     pub size: u64,
     /// 最后修改时间
     pub modified_at: Option<String>,
+    /// 是否为文件夹
+    pub is_dir: bool,
 }
 
 // ── 风险等级 ──

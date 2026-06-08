@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
-import { formatBytes } from "../lib/demoData";
+import { formatBytes, type CategoryResult, type FileInfo } from "../lib/demoData";
 import { scanPhases, useScannerStore } from "../stores/scanner";
 
 const scannerStore = useScannerStore();
@@ -26,6 +26,7 @@ const {
 } = storeToRefs(scannerStore);
 
 const { cleanSelected, startScan, toggleCategory, toggleExpanded } = scannerStore;
+const detailModalCategoryId = ref<string | null>(null);
 
 const scanHeadline = computed(() =>
   scanResults.value.length ? formatBytes(totalCleanable.value) : "先做一次快速体检",
@@ -43,10 +44,42 @@ const selectedSummary = computed(() =>
     : "还没有选择要清理的项目",
 );
 
+const detailModalCategory = computed(() =>
+  scanResults.value.find((item) => item.id === detailModalCategoryId.value) ?? null,
+);
+
+const detailModalItems = computed(() =>
+  detailModalCategory.value ? detailItems(detailModalCategory.value) : [],
+);
+
 function riskLabel(risk: string) {
   if (risk === "low") return "可放心清理";
   if (risk === "medium") return "建议确认";
   return "已锁定";
+}
+
+function detailItems(item: CategoryResult): FileInfo[] {
+  return [...item.files].sort((left, right) => right.size - left.size);
+}
+
+function previewDetailItems(item: CategoryResult): FileInfo[] {
+  return detailItems(item).slice(0, 20);
+}
+
+function detailKind(item: FileInfo) {
+  return item.is_dir ? "文件夹" : "文件";
+}
+
+function detailGlyph(item: FileInfo) {
+  return item.is_dir ? "▣" : "•";
+}
+
+function openDetailModal(categoryId: string) {
+  detailModalCategoryId.value = categoryId;
+}
+
+function closeDetailModal() {
+  detailModalCategoryId.value = null;
 }
 </script>
 
@@ -121,15 +154,31 @@ function riskLabel(risk: string) {
           <div class="preview-head">
             <button type="button" @click="toggleExpanded(item.id)">
               <span>{{ expandedCategory === item.id ? "⌃" : "⌄" }}</span>
-              查看样例文件
+              展开详情
             </button>
+            <small v-if="item.files.length">{{ item.files.length.toLocaleString() }} 个一级项目</small>
           </div>
 
-          <div v-if="expandedCategory === item.id" class="file-preview">
-            <div v-for="file in item.files" :key="file.path">
-              <span>{{ file.path }}</span>
-              <strong>{{ formatBytes(file.size) }}</strong>
+          <div v-if="expandedCategory === item.id" class="detail-preview">
+            <div v-if="item.files.length" class="detail-list">
+              <div v-for="file in previewDetailItems(item)" :key="file.path" class="detail-row">
+                <span class="detail-kind">{{ detailGlyph(file) }}</span>
+                <span class="detail-path">
+                  <strong>{{ file.path }}</strong>
+                  <small>{{ detailKind(file) }}</small>
+                </span>
+                <b>{{ formatBytes(file.size) }}</b>
+              </div>
             </div>
+            <div v-else class="detail-empty">这个分类没有可展开的一级项目。</div>
+            <button
+              v-if="item.files.length > 20"
+              type="button"
+              class="show-all-button"
+              @click="openDetailModal(item.id)"
+            >
+              查看全部 {{ item.files.length.toLocaleString() }} 项
+            </button>
           </div>
         </article>
       </div>
@@ -150,6 +199,35 @@ function riskLabel(risk: string) {
           跳过 {{ cleanReport.skipped_count }} 个。快照：{{ cleanReport.snapshot_id }}
         </p>
       </div>
+    </div>
+
+    <div
+      v-if="detailModalCategory"
+      class="detail-modal-backdrop"
+      role="presentation"
+      @click.self="closeDetailModal"
+    >
+      <section class="detail-modal" role="dialog" aria-modal="true" :aria-label="`${detailModalCategory.name}详情`">
+        <header>
+          <div>
+            <p class="section-kicker">Category Detail</p>
+            <h3>{{ detailModalCategory.name }}</h3>
+            <span>{{ detailModalItems.length.toLocaleString() }} 个一级项目 · 按大小降序</span>
+          </div>
+          <button type="button" aria-label="关闭详情" @click="closeDetailModal">×</button>
+        </header>
+
+        <div class="modal-detail-list">
+          <div v-for="file in detailModalItems" :key="file.path" class="detail-row">
+            <span class="detail-kind">{{ detailGlyph(file) }}</span>
+            <span class="detail-path">
+              <strong>{{ file.path }}</strong>
+              <small>{{ detailKind(file) }}</small>
+            </span>
+            <b>{{ formatBytes(file.size) }}</b>
+          </div>
+        </div>
+      </section>
     </div>
   </section>
 </template>
@@ -466,6 +544,10 @@ h1 {
 }
 
 .preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 16px 12px 56px;
 }
 
@@ -480,16 +562,27 @@ h1 {
   font-weight: 850;
 }
 
-.file-preview {
-  display: grid;
-  gap: 7px;
+.preview-head small {
+  color: rgba(235, 248, 255, 0.48);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.detail-preview {
   padding: 0 16px 14px 56px;
 }
 
-.file-preview div {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
+.detail-list,
+.modal-detail-list {
+  display: grid;
+  gap: 7px;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
   padding: 8px 10px;
   border-radius: 9px;
   background: rgba(235, 248, 255, 0.1);
@@ -497,15 +590,123 @@ h1 {
   font-size: 12px;
 }
 
-.file-preview span {
+.detail-kind {
+  display: grid;
+  place-items: center;
+  color: #6ce6dd;
+  font-size: 13px;
+}
+
+.detail-path {
   min-width: 0;
+}
+
+.detail-path strong {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
 }
 
-.file-preview strong {
+.detail-path small {
+  display: block;
+  margin-top: 2px;
+  color: rgba(235, 248, 255, 0.48);
+  font-size: 11px;
+}
+
+.detail-row b {
   white-space: nowrap;
+  color: #fff;
+  font-size: 12px;
+}
+
+.detail-empty {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: rgba(235, 248, 255, 0.08);
+  color: rgba(235, 248, 255, 0.62);
+  font-size: 12px;
+}
+
+.show-all-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  margin-top: 10px;
+  padding: 0 12px;
+  border: 1px solid rgba(238, 249, 255, 0.16);
+  border-radius: 9px;
+  background: rgba(235, 248, 255, 0.12);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.detail-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 30px;
+  background: rgba(13, 31, 51, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.detail-modal {
+  width: min(760px, 100%);
+  max-height: min(680px, calc(100vh - 60px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid rgba(238, 249, 255, 0.18);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(59, 123, 157, 0.98), rgba(36, 77, 112, 0.98)),
+    #2d668f;
+  box-shadow: 0 28px 80px rgba(12, 28, 58, 0.34);
+  overflow: hidden;
+}
+
+.detail-modal header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid rgba(238, 249, 255, 0.12);
+}
+
+.detail-modal h3 {
+  margin: 0;
+  color: #fff;
+  font-size: 20px;
+}
+
+.detail-modal header span {
+  display: block;
+  margin-top: 5px;
+  color: rgba(235, 248, 255, 0.62);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.detail-modal header button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(235, 248, 255, 0.12);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.modal-detail-list {
+  overflow: auto;
+  padding: 16px 22px 22px;
 }
 
 .empty-state {

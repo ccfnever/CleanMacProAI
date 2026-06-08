@@ -3,6 +3,7 @@
 use crate::models::{CategoryResult, FileInfo, ScanProgress, ScanResult};
 use crate::rules::{load_rules, validate_rules};
 use glob::glob;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -10,7 +11,6 @@ use std::time::Instant;
 use tauri::State;
 use walkdir::WalkDir;
 
-const MAX_PREVIEW_FILES: usize = 20;
 const MAX_FILES_PER_CATEGORY: u64 = 80_000;
 const RULES_YAML: &str = include_str!("../rules/cleanup_rules.yaml");
 
@@ -59,17 +59,25 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
 
         let mut file_count = 0_u64;
         let mut category_size = 0_u64;
-        let mut preview_files = Vec::new();
+        let mut detail_items = Vec::new();
+        let mut seen_detail_paths = HashSet::new();
 
         for pattern in expand_rule_patterns(&rule.paths) {
             for path in glob(&pattern).map_err(|e| e.to_string())?.filter_map(Result::ok) {
+                collect_detail_item(
+                    &path,
+                    &rule.exclude,
+                    rule.min_size,
+                    &mut detail_items,
+                    &mut seen_detail_paths,
+                );
+
                 scan_path(
                     &path,
                     &rule.exclude,
                     rule.min_size,
                     &mut file_count,
                     &mut category_size,
-                    &mut preview_files,
                 );
 
                 if file_count >= MAX_FILES_PER_CATEGORY {
@@ -80,6 +88,7 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
 
         if file_count > 0 {
             total_size += category_size;
+            detail_items.sort_by(|left, right| right.size.cmp(&left.size));
             categories.push(CategoryResult {
                 id: category_id.clone(),
                 name: rule.name.clone(),
@@ -87,7 +96,7 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
                 risk: rule.risk_level(),
                 file_count,
                 total_size: category_size,
-                files: preview_files,
+                files: detail_items,
             });
         }
 
@@ -142,14 +151,13 @@ fn scan_path(
     min_size: u64,
     file_count: &mut u64,
     category_size: &mut u64,
-    preview_files: &mut Vec<FileInfo>,
 ) {
     if should_exclude(path, exclude) {
         return;
     }
 
     if path.is_file() {
-        collect_file(path, min_size, file_count, category_size, preview_files);
+        collect_file(path, min_size, file_count, category_size);
         return;
     }
 
@@ -168,7 +176,7 @@ fn scan_path(
 
         let entry_path = entry.path();
         if entry_path.is_file() && !should_exclude(entry_path, exclude) {
-            collect_file(entry_path, min_size, file_count, category_size, preview_files);
+            collect_file(entry_path, min_size, file_count, category_size);
         }
     }
 }
@@ -178,7 +186,6 @@ fn collect_file(
     min_size: u64,
     file_count: &mut u64,
     category_size: &mut u64,
-    preview_files: &mut Vec<FileInfo>,
 ) {
     let Ok(metadata) = fs::metadata(path) else {
         return;
@@ -190,18 +197,73 @@ fn collect_file(
 
     *file_count += 1;
     *category_size += size;
+}
 
-    if preview_files.len() < MAX_PREVIEW_FILES {
-        preview_files.push(FileInfo {
-            path: display_path(path),
-            size,
-            modified_at: metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_secs().to_string()),
-        });
+fn collect_detail_item(
+    path: &Path,
+    exclude: &[String],
+    min_size: u64,
+    detail_items: &mut Vec<FileInfo>,
+    seen_paths: &mut HashSet<String>,
+) {
+    if should_exclude(path, exclude) {
+        return;
     }
+
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    let is_dir = metadata.is_dir();
+    let size = if is_dir {
+        detail_path_size(path, exclude, min_size)
+    } else {
+        metadata.len()
+    };
+
+    if size < min_size {
+        return;
+    }
+
+    let display = display_path(path);
+    if !seen_paths.insert(display.clone()) {
+        return;
+    }
+
+    detail_items.push(FileInfo {
+        path: display,
+        size,
+        modified_at: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs().to_string()),
+        is_dir,
+    });
+}
+
+fn detail_path_size(path: &Path, exclude: &[String], min_size: u64) -> u64 {
+    if path.is_file() {
+        let Ok(metadata) = fs::metadata(path) else {
+            return 0;
+        };
+        let size = metadata.len();
+        return if size >= min_size { size } else { 0 };
+    }
+
+    if !path.is_dir() {
+        return 0;
+    }
+
+    WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(|entry| entry.into_path())
+        .filter(|entry_path| entry_path.is_file() && !should_exclude(entry_path, exclude))
+        .filter_map(|entry_path| fs::metadata(entry_path).ok())
+        .map(|metadata| metadata.len())
+        .filter(|size| *size >= min_size)
+        .sum()
 }
 
 fn should_exclude(path: &Path, exclude: &[String]) -> bool {

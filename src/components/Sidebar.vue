@@ -88,7 +88,7 @@ function selectView(id: string) {
       <p>{{ availableText }} 可用</p>
       <small>{{ dataSource === "native" ? "来自本机容量信息" : "Demo 数据，后端可接入" }}</small>
     </div>
-    <button type="button" class="unlock-button">解锁完整版</button>
+    <!-- <button type="button" class="unlock-button">解锁完整版</button> -->
   </aside>
 </template>
 

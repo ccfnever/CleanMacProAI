@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { demoApps, demoScanResult, formatBytes, type DiskInfo } from "../lib/demoData";
+import { storeToRefs } from "pinia";
+import { formatBytes, type DiskInfo, type RiskLevel } from "../lib/demoData";
+import { useScannerStore } from "../stores/scanner";
 
 const props = defineProps<{
   diskInfo: DiskInfo;
@@ -11,54 +13,90 @@ const emit = defineEmits<{
   navigate: [view: string];
 }>();
 
+const scannerStore = useScannerStore();
+const { scanResults, totalCleanable, totalFileCount } = storeToRefs(scannerStore);
+
+const hasScanResults = computed(() => scanResults.value.length > 0);
+const availableRatio = computed(() =>
+  props.diskInfo.total_bytes > 0 ? (props.diskInfo.available_bytes / props.diskInfo.total_bytes) * 100 : 0,
+);
+const diskStatus = computed(() => {
+  if (props.diskInfo.usage_percent >= 90) return "空间紧张";
+  if (props.diskInfo.usage_percent >= 80) return "建议清理";
+  return "状态良好";
+});
+const engineStatus = computed(() =>
+  props.dataSource === "native" ? "已连接本机磁盘" : "等待本机运行环境",
+);
+
 const quickWins = computed(() => [
   {
-    label: "预计可清理",
-    value: formatBytes(demoScanResult.total_size),
-    hint: "低风险项已默认勾选",
+    label: "可用空间",
+    value: formatBytes(props.diskInfo.available_bytes),
+    hint: `${availableRatio.value.toFixed(0)}% 仍可使用`,
     icon: "⌁",
   },
   {
-    label: "应用残留",
-    value: formatBytes(demoApps.reduce((sum, app) => sum + app.related_size, 0)),
-    hint: "来自应用卸载模块",
-    icon: "□",
+    label: "可清理项",
+    value: hasScanResults.value ? formatBytes(totalCleanable.value) : "待扫描",
+    hint: hasScanResults.value
+      ? `${scanResults.value.length} 类 · ${totalFileCount.value.toLocaleString()} 个文件`
+      : "扫描后显示真实结果",
+    icon: "◇",
   },
   {
-    label: "安全规则",
-    value: "12 类",
-    hint: "高风险默认锁定",
+    label: "清理方式",
+    value: "安全模式",
+    hint: "选中项先移入废纸篓",
     icon: "✓",
   },
 ]);
 
 const diskOffset = computed(() => 314 - (314 * props.diskInfo.usage_percent) / 100);
-const riskRows = computed(() => [
-  { name: "系统缓存", size: "2.83 GB", level: "安全", color: "#1f8b72" },
-  { name: "下载残留", size: "1.62 GB", level: "需确认", color: "#d8872f" },
-  { name: "邮件附件", size: "409 MB", level: "高风险", color: "#d64545" },
-]);
+const riskRows = computed(() =>
+  [...scanResults.value]
+    .sort((left, right) => right.total_size - left.total_size)
+    .slice(0, 4)
+    .map((item) => ({
+      name: item.name,
+      size: formatBytes(item.total_size),
+      level: riskLabel(item.risk),
+      color: riskColor(item.risk),
+    })),
+);
+
+function riskLabel(risk: RiskLevel) {
+  if (risk === "low") return "可放心清理";
+  if (risk === "medium") return "建议确认";
+  return "已锁定";
+}
+
+function riskColor(risk: RiskLevel) {
+  if (risk === "low") return "#35c8c0";
+  if (risk === "medium") return "#e2aa48";
+  return "#e46f82";
+}
 </script>
 
 <template>
   <section class="dashboard-page">
     <div class="hero-panel">
       <div class="hero-copy">
-        <p class="section-kicker">安全清理控制台</p>
-        <h1>给磁盘做一次大扫除吧。</h1>
+        <p class="section-kicker">Mac Storage Control</p>
+        <h1>{{ diskStatus }}，来一次深度清理吧。</h1>
         <p>
-          当前 demo 已把磁盘状态、风险分层、扫描结果和应用残留串成完整路径。
-          {{ dataSource === "native" ? "容量信息已来自本机。" : "现在处于浏览器 Demo 模式。" }}
+          CleanMacProAI 只基于本机扫描结果给出建议。低风险缓存可直接处理，
+          需要判断的项目会保留给你确认，高风险内容默认锁定。
         </p>
 
         <div class="hero-actions">
           <button type="button" class="primary-action" @click="emit('navigate', 'scanner')">
             <span>▶</span>
-            开始智能扫描
+            {{ hasScanResults ? "查看扫描结果" : "开始智能扫描" }}
           </button>
           <button type="button" class="secondary-action" @click="emit('navigate', 'uninstaller')">
             <span>□</span>
-            查看应用残留
+            管理应用残留
           </button>
         </div>
       </div>
@@ -78,6 +116,7 @@ const riskRows = computed(() => [
           <strong>{{ diskInfo.usage_percent.toFixed(0) }}%</strong>
           <span>已使用</span>
         </div>
+        <small>{{ engineStatus }}</small>
       </div>
     </div>
 
@@ -95,11 +134,13 @@ const riskRows = computed(() => [
         <div class="panel-head">
           <div>
             <p class="section-kicker">扫描预案</p>
-            <h3>今天最值得处理的项目</h3>
+            <h3>{{ hasScanResults ? "本次扫描发现" : "等待智能扫描" }}</h3>
           </div>
-          <button type="button" @click="emit('navigate', 'scanner')">进入</button>
+          <button type="button" @click="emit('navigate', 'scanner')">
+            {{ hasScanResults ? "查看" : "扫描" }}
+          </button>
         </div>
-        <div class="risk-list">
+        <div v-if="riskRows.length" class="risk-list">
           <div v-for="row in riskRows" :key="row.name" class="risk-row">
             <span :style="{ background: row.color }"></span>
             <div>
@@ -108,6 +149,10 @@ const riskRows = computed(() => [
             </div>
             <b>{{ row.size }}</b>
           </div>
+        </div>
+        <div v-else class="scan-empty">
+          <strong>暂无扫描结果</strong>
+          <p>完成一次智能扫描后，这里会显示真实的分类、大小和风险等级。</p>
         </div>
       </section>
 
@@ -278,6 +323,14 @@ h1 {
   font-weight: 800;
 }
 
+.disk-orbit > small {
+  position: absolute;
+  bottom: 20px;
+  color: rgba(235, 248, 255, 0.58);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -350,6 +403,26 @@ h1 {
   display: grid;
   gap: 12px;
   margin-top: 18px;
+}
+
+.scan-empty {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px dashed rgba(238, 249, 255, 0.22);
+  border-radius: 13px;
+  background: rgba(235, 248, 255, 0.08);
+}
+
+.scan-empty strong {
+  color: #fff;
+  font-size: 14px;
+}
+
+.scan-empty p {
+  margin: 6px 0 0;
+  color: rgba(235, 248, 255, 0.62);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .risk-row {

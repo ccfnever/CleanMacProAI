@@ -23,6 +23,10 @@ const currentTitle = computed(() => {
   return titles[currentView.value];
 });
 
+const engineLabel = computed(() =>
+  dataSource.value === "native" ? "本机引擎已连接" : "本机引擎待连接",
+);
+
 const stageClass = computed(() => [
   "content-stage",
   `view-${currentView.value}`,
@@ -57,12 +61,12 @@ onMounted(async () => {
     <main :class="stageClass">
       <header v-if="currentView !== 'uninstaller'" class="topbar">
         <div>
-          <p class="eyebrow">CleanMacProAI / {{ dataSource === "native" ? "Native" : "Demo" }}</p>
+          <p class="eyebrow">CleanMacProAI / Local First</p>
           <h2>{{ currentTitle }}</h2>
         </div>
         <div class="system-chip">
           <span>●</span>
-          本地优先 · 安全模式
+          {{ engineLabel }} · 安全模式
         </div>
       </header>
 

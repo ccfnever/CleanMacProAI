@@ -1,12 +1,14 @@
 /// 系统操作 — Tauri Commands
 
 use crate::models::DiskInfo;
+use std::path::Path;
 use std::process::Command;
 
 #[tauri::command]
 pub async fn get_disk_info() -> Result<DiskInfo, String> {
+    let mount_path = primary_storage_mount();
     let output = Command::new("df")
-        .args(["-k", "/"])
+        .args(["-k", mount_path])
         .output()
         .map_err(|e| format!("Failed to execute df: {}", e))?;
 
@@ -25,8 +27,8 @@ pub async fn get_disk_info() -> Result<DiskInfo, String> {
     }
 
     let total_bytes = parse_kilobytes(columns[1])?;
-    let used_bytes = parse_kilobytes(columns[2])?;
     let available_bytes = parse_kilobytes(columns[3])?;
+    let used_bytes = total_bytes.saturating_sub(available_bytes);
     let usage_percent = if total_bytes == 0 {
         0.0
     } else {
@@ -56,4 +58,12 @@ fn parse_kilobytes(value: &str) -> Result<u64, String> {
         .parse::<u64>()
         .map(|kb| kb.saturating_mul(1024))
         .map_err(|e| format!("Invalid df number '{}': {}", value, e))
+}
+
+fn primary_storage_mount() -> &'static str {
+    if Path::new("/System/Volumes/Data").exists() {
+        "/System/Volumes/Data"
+    } else {
+        "/"
+    }
 }

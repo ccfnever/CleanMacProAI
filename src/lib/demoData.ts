@@ -6,6 +6,7 @@ export interface FileInfo {
   path: string;
   size: number;
   modified_at?: string;
+  is_dir?: boolean;
 }
 
 export interface CategoryResult {
@@ -119,9 +120,9 @@ export const demoScanResult: ScanResult = {
       file_count: 18842,
       total_size: 8_724_152_320,
       files: [
-        { path: "~/Library/Developer/Xcode/DerivedData/CleanMacProAI-bkpq", size: 2_104_983_552 },
-        { path: "~/Library/Developer/Xcode/iOS DeviceSupport/17.4", size: 1_719_582_720 },
-        { path: "~/Library/Developer/CoreSimulator/Caches/dyld", size: 842_006_528 },
+        { path: "~/Library/Developer/Xcode/DerivedData/CleanMacProAI-bkpq", size: 2_104_983_552, is_dir: true },
+        { path: "~/Library/Developer/Xcode/iOS DeviceSupport/17.4", size: 1_719_582_720, is_dir: true },
+        { path: "~/Library/Developer/CoreSimulator/Caches/dyld", size: 842_006_528, is_dir: true },
       ],
     },
     {
@@ -132,9 +133,9 @@ export const demoScanResult: ScanResult = {
       file_count: 23421,
       total_size: 4_486_578_176,
       files: [
-        { path: "~/Library/Caches/Google/Chrome/Default/Cache/Cache_Data", size: 1_633_779_712 },
-        { path: "~/Library/Caches/com.apple.Safari/fsCachedData", size: 964_689_920 },
-        { path: "~/Library/Caches/Microsoft Edge/Default/Code Cache/js", size: 517_996_544 },
+        { path: "~/Library/Caches/Google/Chrome/Default/Cache/Cache_Data", size: 1_633_779_712, is_dir: true },
+        { path: "~/Library/Caches/com.apple.Safari/fsCachedData", size: 964_689_920, is_dir: true },
+        { path: "~/Library/Caches/Microsoft Edge/Default/Code Cache/js", size: 517_996_544, is_dir: true },
       ],
     },
     {
@@ -145,9 +146,9 @@ export const demoScanResult: ScanResult = {
       file_count: 12970,
       total_size: 2_834_546_688,
       files: [
-        { path: "~/Library/Caches/com.apple.helpd", size: 438_304_768 },
-        { path: "~/Library/Caches/com.figma.Desktop", size: 388_923_392 },
-        { path: "~/Library/Caches/com.spotify.client", size: 327_155_712 },
+        { path: "~/Library/Caches/com.apple.helpd", size: 438_304_768, is_dir: true },
+        { path: "~/Library/Caches/com.figma.Desktop", size: 388_923_392, is_dir: true },
+        { path: "~/Library/Caches/com.spotify.client", size: 327_155_712, is_dir: true },
       ],
     },
     {
@@ -158,9 +159,9 @@ export const demoScanResult: ScanResult = {
       file_count: 47,
       total_size: 1_624_178_688,
       files: [
-        { path: "~/Downloads/Figma-124.7.dmg", size: 156_237_824 },
-        { path: "~/Downloads/Xcode_15.4.xip", size: 1_020_813_312 },
-        { path: "~/Downloads/Node-22.1.0.pkg", size: 87_359_488 },
+        { path: "~/Downloads/Xcode_15.4.xip", size: 1_020_813_312, is_dir: false },
+        { path: "~/Downloads/Figma-124.7.dmg", size: 156_237_824, is_dir: false },
+        { path: "~/Downloads/Node-22.1.0.pkg", size: 87_359_488, is_dir: false },
       ],
     },
     {
@@ -171,8 +172,8 @@ export const demoScanResult: ScanResult = {
       file_count: 214,
       total_size: 429_219_840,
       files: [
-        { path: "~/Library/Mail/V10/MailData/Downloads/report-final.pdf", size: 46_137_344 },
-        { path: "~/Library/Mail/V10/MailData/Downloads/assets.zip", size: 128_974_848 },
+        { path: "~/Library/Mail/V10/MailData/Downloads/assets.zip", size: 128_974_848, is_dir: false },
+        { path: "~/Library/Mail/V10/MailData/Downloads/report-final.pdf", size: 46_137_344, is_dir: false },
       ],
     },
   ],
