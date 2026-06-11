@@ -102,7 +102,7 @@ export const useScannerStore = defineStore("scanner", () => {
     };
     const result = await invokeOrDemo<CleanReport>("clean_categories", fallback, {
       categoryIds: selectedItems.value.map((item) => item.id),
-      safeMode: true,
+      safeMode: false,
     });
     cleanReport.value = result.data;
     notice.value =

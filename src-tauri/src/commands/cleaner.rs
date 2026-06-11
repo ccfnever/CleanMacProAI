@@ -144,19 +144,25 @@ fn is_safe_clean_target(path: &Path) -> bool {
     let Ok(canonical) = path.canonicalize() else {
         return false;
     };
-    let text = canonical.to_string_lossy();
     let Some(home) = dirs::home_dir() else {
         return false;
     };
-    let home_text = home.to_string_lossy();
 
-    text.starts_with(&format!("{}/Library/Caches", home_text))
-        || text.starts_with(&format!("{}/Library/Logs", home_text))
-        || text.starts_with(&format!("{}/Library/Developer/Xcode", home_text))
-        || text.starts_with(&format!("{}/Downloads", home_text))
-        || text.starts_with(&format!("{}/.Trash", home_text))
-        || text.starts_with("/Library/Caches")
-        || text.starts_with("/Library/Logs")
+    let allowed_roots = [
+        home.join("Library/Caches"),
+        home.join("Library/Logs"),
+        home.join("Library/Developer/Xcode"),
+        home.join("Downloads"),
+        home.join(".Trash"),
+        home.join(".npm"),
+        home.join(".pnpm-store"),
+        home.join(".yarn/cache"),
+        home.join(".yarn/berry/cache"),
+        PathBuf::from("/Library/Caches"),
+        PathBuf::from("/Library/Logs"),
+    ];
+
+    allowed_roots.iter().any(|root| canonical.starts_with(root))
 }
 
 fn should_exclude(path: &Path, exclude: &[String]) -> bool {

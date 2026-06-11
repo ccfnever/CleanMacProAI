@@ -68,6 +68,9 @@ categories:
       - "~/.npm/*"
       - "~/.pnpm-store/*"
       - "~/.yarn/cache/*"
+      - "~/.yarn/berry/cache/*"
+      - "~/Library/Caches/Yarn/*"
+      - "~/Library/Caches/Yarn/v6/*"
 
   # ── Docker 无用数据 (低风险) ──
   docker_unused:
