@@ -1,8 +1,10 @@
 /// 清理规则引擎 — 从 YAML 加载并验证清理规则
 
 use crate::models::RiskLevel;
+use glob::Pattern;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// YAML 规则文件的结构
 #[derive(Debug, Deserialize)]
@@ -11,6 +13,8 @@ pub struct CleanupRules {
     pub version: u32,
     /// 各清理分类
     pub categories: HashMap<String, CategoryRule>,
+    #[serde(default)]
+    pub always_exclude: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +72,90 @@ pub fn validate_rules(rules: &CleanupRules) -> Vec<String> {
     warnings
 }
 
+/// Return whether a path is covered by any exclusion pattern.
+///
+/// Literal patterns protect the exact path and all descendants. Glob patterns
+/// use the same path-aware matching semantics while normalizing separators and
+/// expanding a leading `~/` against the current user's home directory.
+pub fn path_matches_any(path: &Path, patterns: &[String]) -> bool {
+    let candidate = normalize_path(&path.to_string_lossy());
+    patterns.iter().any(|pattern| path_matches_pattern(&candidate, pattern))
+}
+
+fn path_matches_pattern(candidate: &str, pattern: &str) -> bool {
+    let is_home_pattern = pattern == "~" || pattern.starts_with("~/");
+    let expanded = expand_home_pattern(pattern);
+    let normalized = normalize_path(&expanded);
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if has_glob_metachar(&normalized) {
+        let Ok(compiled) = Pattern::new(&normalized) else {
+            return false;
+        };
+        if compiled.matches_path(Path::new(candidate)) {
+            return true;
+        }
+        // Rule-local patterns such as `com.example.App` are basename/segment
+        // matches rather than filesystem roots.
+        if !normalized.starts_with('/') && !is_home_pattern {
+            return candidate
+                .split('/')
+                .any(|segment| compiled.matches(segment));
+        }
+        return false;
+    }
+
+    if !normalized.starts_with('/') && !is_home_pattern {
+        return candidate.split('/').any(|segment| segment == normalized);
+    }
+
+    candidate == normalized
+        || candidate
+            .strip_prefix(&normalized)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn expand_home_pattern(pattern: &str) -> String {
+    if pattern == "~" {
+        return dirs::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
+    if let Some(rest) = pattern.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|home| home.join(rest).to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
+    pattern.to_string()
+}
+
+fn has_glob_metachar(value: &str) -> bool {
+    value.chars().any(|ch| matches!(ch, '*' | '?' | '['))
+}
+
+fn normalize_path(value: &str) -> String {
+    let value = value.replace('\\', "/");
+    let absolute = value.starts_with('/');
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in value.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
+        }
+    }
+    let joined = segments.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +211,56 @@ categories:
         let warnings = validate_rules(&rules);
         assert!(!warnings.is_empty());
         assert!(warnings[0].contains("sensitive system path"));
+    }
+
+    #[test]
+    fn exclusion_matches_exact_and_descendant_but_not_similar_prefix() {
+        let patterns = vec!["/Users/test/Library/Caches".to_string()];
+        assert!(path_matches_any(Path::new("/Users/test/Library/Caches"), &patterns));
+        assert!(path_matches_any(
+            Path::new("/Users/test/Library/Caches/App/data"),
+            &patterns
+        ));
+        assert!(!path_matches_any(
+            Path::new("/Users/test/Library/Caches-old"),
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn exclusion_supports_globs_and_separator_normalization() {
+        let patterns = vec!["/Users/test/Library/Caches/*".to_string()];
+        assert!(path_matches_any(
+            Path::new(r"\\Users\\test\\Library\\Caches\\App"),
+            &patterns
+        ));
+        assert!(path_matches_any(
+            Path::new("/Users/test/Library/Caches/App/data"),
+            &patterns
+        ));
+        assert!(!path_matches_any(
+            Path::new("/Users/test/Library/Cache/App"),
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn exclusion_expands_home_prefix() {
+        let home = dirs::home_dir().expect("home directory should be available");
+        let patterns = vec!["~/Library/Caches".to_string()];
+        assert!(path_matches_any(&home.join("Library/Caches/App"), &patterns));
+    }
+
+    #[test]
+    fn relative_exclusion_matches_a_path_segment() {
+        let patterns = vec!["com.example.App".to_string()];
+        assert!(path_matches_any(
+            Path::new("/Users/test/Library/Caches/com.example.App/data"),
+            &patterns
+        ));
+        assert!(!path_matches_any(
+            Path::new("/Users/test/Library/Caches/com.example.App-old"),
+            &patterns
+        ));
     }
 }

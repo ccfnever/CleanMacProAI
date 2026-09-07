@@ -69,8 +69,6 @@ pub struct CleanReport {
     pub skipped_count: u64,
     /// 错误列表
     pub errors: Vec<CleanError>,
-    /// 快照 ID（用于回滚）
-    pub snapshot_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

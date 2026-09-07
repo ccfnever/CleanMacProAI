@@ -46,8 +46,8 @@ jobs:
 
       - name: Security audit
         run: |
-          cargo install cargo-audit || true
-          cargo audit || true
+          cargo install cargo-audit
+          cargo audit
 
   # ── Frontend ──
   frontend-check:
@@ -69,10 +69,10 @@ jobs:
         run: pnpm install
 
       - name: Type check
-        run: pnpm typecheck || true
+        run: pnpm typecheck
 
       - name: Lint
-        run: pnpm lint || true
+        run: pnpm lint
 
       - name: Build
         run: pnpm build

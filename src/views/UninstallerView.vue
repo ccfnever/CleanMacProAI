@@ -43,14 +43,13 @@ const isUninstalling = ref(false);
 const query = ref("");
 const activeFacet = ref("status:all");
 const selectedBundleIds = ref<Set<string>>(new Set());
-const selectedChildKeys = ref<Set<string>>(new Set());
-const excludedChildKeys = ref<Set<string>>(new Set());
 const failedIconPaths = ref<Set<string>>(new Set());
 const expandedBundleIds = ref<Set<string>>(new Set());
 const isAutoScanning = ref(false);
 const autoScanCompletedCount = ref(0);
 const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
+const dataSource = ref<"native" | "demo">("demo");
 let isUnmounted = false;
 
 const filteredApps = computed(() => {
@@ -263,80 +262,22 @@ function groupIcon(groupId: FileGroupId): string {
   return icons[groupId];
 }
 
-function groupKey(app: InstalledApp, group: RelatedGroup): string {
-  return `${app.bundle_id}:group:${group.id}`;
-}
-
-function fileKey(app: InstalledApp, group: RelatedGroup, file: FileInfo): string {
-  return `${app.bundle_id}:file:${group.id}:${file.path}`;
-}
-
-function isGroupSelected(app: InstalledApp, group: RelatedGroup): boolean {
-  const key = groupKey(app, group);
-  if (excludedChildKeys.value.has(key)) return false;
-  return selectedBundleIds.value.has(app.bundle_id) || selectedChildKeys.value.has(key);
-}
-
-function isFileSelected(app: InstalledApp, group: RelatedGroup, file: FileInfo): boolean {
-  const key = fileKey(app, group, file);
-  if (excludedChildKeys.value.has(groupKey(app, group)) || excludedChildKeys.value.has(key)) return false;
-  return (
-    selectedBundleIds.value.has(app.bundle_id) ||
-    selectedChildKeys.value.has(groupKey(app, group)) ||
-    selectedChildKeys.value.has(key)
-  );
-}
-
-function toggleGroup(app: InstalledApp, group: RelatedGroup) {
-  const selectedChildren = new Set(selectedChildKeys.value);
-  const excludedChildren = new Set(excludedChildKeys.value);
-  const key = groupKey(app, group);
-  const keys = [key, ...group.files.map((file) => fileKey(app, group, file))];
-
-  if (isGroupSelected(app, group)) {
-    if (selectedBundleIds.value.has(app.bundle_id)) {
-      keys.forEach((itemKey) => excludedChildren.add(itemKey));
-    } else {
-      keys.forEach((itemKey) => selectedChildren.delete(itemKey));
-    }
-  } else {
-    keys.forEach((itemKey) => {
-      excludedChildren.delete(itemKey);
-      selectedChildren.add(itemKey);
-    });
-  }
-
-  selectedChildKeys.value = selectedChildren;
-  excludedChildKeys.value = excludedChildren;
-  uninstallReport.value = null;
-}
-
-function toggleFile(app: InstalledApp, group: RelatedGroup, file: FileInfo) {
-  const selectedChildren = new Set(selectedChildKeys.value);
-  const excludedChildren = new Set(excludedChildKeys.value);
-  const key = fileKey(app, group, file);
-
-  if (isFileSelected(app, group, file)) {
-    if (selectedBundleIds.value.has(app.bundle_id) || selectedChildKeys.value.has(groupKey(app, group))) {
-      excludedChildren.add(key);
-    }
-    selectedChildren.delete(key);
-  } else {
-    excludedChildren.delete(key);
-    selectedChildren.add(key);
-  }
-
-  selectedChildKeys.value = selectedChildren;
-  excludedChildKeys.value = excludedChildren;
-  uninstallReport.value = null;
-}
-
 onMounted(async () => {
   const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", demoApps, undefined, 5000);
+  if (result.source === "error") {
+    notice.value = `无法读取应用列表：${result.error}`;
+    isLoading.value = false;
+    return;
+  }
   apps.value = result.data;
-  selectedBundleIds.value = new Set(result.data.slice(0, 1).map((app) => app.bundle_id));
-  expandedBundleIds.value = new Set(result.data.slice(0, 1).map((app) => app.bundle_id));
-  notice.value = result.source === "demo" ? "应用枚举命令尚未返回真实列表，当前展示可交互 Demo 数据。" : null;
+  dataSource.value = result.source === "demo" ? "demo" : "native";
+  selectedBundleIds.value = new Set();
+  expandedBundleIds.value = new Set();
+  notice.value = result.source === "demo"
+    ? "当前展示演示应用列表；演示模式不会执行卸载。"
+    : result.source === "empty"
+      ? "没有找到可卸载的应用。"
+      : null;
   isLoading.value = false;
   void scanAppsInDisplayOrder(result.data);
 });
@@ -350,14 +291,16 @@ async function scanAppsInDisplayOrder(appList: InstalledApp[]) {
   autoScanCompletedCount.value = 0;
   const queue = [...appList].sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 
-  for (const app of queue) {
-    if (isUnmounted) return;
-    await inspectApp(app.bundle_id);
-    if (isUnmounted) return;
-    autoScanCompletedCount.value += 1;
+  try {
+    for (const app of queue) {
+      if (isUnmounted) return;
+      await inspectApp(app.bundle_id);
+      if (isUnmounted) return;
+      autoScanCompletedCount.value += 1;
+    }
+  } finally {
+    isAutoScanning.value = false;
   }
-
-  isAutoScanning.value = false;
 }
 
 async function inspectApp(bundleId: string) {
@@ -377,6 +320,11 @@ async function inspectApp(bundleId: string) {
     60000,
   );
 
+  if (result.source === "error") {
+    notice.value = `无法读取 ${current.name} 的详情：${result.error}`;
+    if (inspectingBundleId.value === bundleId) inspectingBundleId.value = null;
+    return null;
+  }
   apps.value = apps.value.map((app) => (app.bundle_id === bundleId ? result.data : app));
   if (result.source === "demo") {
     notice.value = "当前环境无法读取该应用详情，已保留快速列表数据。";
@@ -410,12 +358,6 @@ function toggleSelected(bundleId: string) {
     next.add(bundleId);
   }
   selectedBundleIds.value = next;
-  excludedChildKeys.value = new Set(
-    [...excludedChildKeys.value].filter((key) => !key.startsWith(`${bundleId}:`)),
-  );
-  selectedChildKeys.value = new Set(
-    [...selectedChildKeys.value].filter((key) => !key.startsWith(`${bundleId}:`)),
-  );
   uninstallReport.value = null;
 }
 
@@ -423,35 +365,69 @@ function selectAllVisible() {
   const next = new Set(selectedBundleIds.value);
   for (const app of filteredApps.value) next.add(app.bundle_id);
   selectedBundleIds.value = next;
-  selectedChildKeys.value = new Set();
-  excludedChildKeys.value = new Set();
 }
 
 async function uninstallSelected() {
   if (selectedApps.value.length === 0) return;
+  if (!window.confirm(`确认卸载 ${selectedApps.value.length} 个应用及其关联残留？`)) return;
   isUninstalling.value = true;
-  const fallback: CleanReport = {
-    ...demoCleanReport,
-    cleaned_count: selectedApps.value.reduce((sum, app) => sum + app.related_count + 1, 0),
-    freed_bytes: selectedTotal.value,
-    snapshot_id: `demo-uninstall-${Date.now()}`,
-  };
-  const result = await invokeOrDemo<CleanReport>("uninstall_app", fallback, {
-    bundleIds: selectedApps.value.map((app) => app.bundle_id),
-    moveToTrash: true,
-  });
-  const removedIds = new Set(selectedBundleIds.value);
-  uninstallReport.value = result.data;
-  apps.value = apps.value.filter((item) => !removedIds.has(item.bundle_id));
-  selectedBundleIds.value = new Set();
-  selectedChildKeys.value = new Set();
-  excludedChildKeys.value = new Set();
-  expandedBundleIds.value = new Set();
-  notice.value =
-    result.source === "demo"
-      ? `Demo：已从列表移除 ${removedIds.size} 个应用，请在 macOS App 中运行以执行真实卸载。`
-      : `已将 ${removedIds.size} 个应用及关联残留移入废纸篓。`;
-  isUninstalling.value = false;
+  uninstallReport.value = null;
+  const targets = [...selectedApps.value];
+  const removedIds = new Set<string>();
+  const failedIds = new Set<string>();
+  const failedDetails: string[] = [];
+  const aggregate: CleanReport = { cleaned_count: 0, freed_bytes: 0, skipped_count: 0, errors: [] };
+
+  try {
+    for (const app of targets) {
+      const fallback: CleanReport = {
+        ...demoCleanReport,
+        cleaned_count: app.related_count + 1,
+        freed_bytes: appTotalSize(app),
+      };
+      const result = await invokeOrDemo<CleanReport>("uninstall_app", fallback, {
+        bundleId: app.bundle_id,
+      });
+      if (result.source === "error") {
+        failedIds.add(app.bundle_id);
+        failedDetails.push(`${app.name}（${result.error}）`);
+        continue;
+      }
+      if (result.source !== "native") {
+        failedIds.add(app.bundle_id);
+        failedDetails.push(`${app.name}（演示模式未执行）`);
+        continue;
+      }
+      if (result.data.errors.length > 0) {
+        failedIds.add(app.bundle_id);
+        failedDetails.push(`${app.name}（${result.data.errors[0].reason}）`);
+        continue;
+      }
+      removedIds.add(app.bundle_id);
+      aggregate.cleaned_count += result.data.cleaned_count;
+      aggregate.freed_bytes += result.data.freed_bytes;
+      aggregate.skipped_count += result.data.skipped_count;
+    }
+
+    if (removedIds.size > 0) {
+      uninstallReport.value = aggregate;
+      apps.value = apps.value.filter((item) => !removedIds.has(item.bundle_id));
+    }
+    selectedBundleIds.value = failedIds;
+    expandedBundleIds.value = new Set(
+      [...expandedBundleIds.value].filter((bundleId) => !removedIds.has(bundleId)),
+    );
+
+    if (removedIds.size === targets.length) {
+      notice.value = `已将 ${removedIds.size} 个应用及关联残留移入废纸篓。`;
+    } else if (removedIds.size > 0) {
+      notice.value = `已卸载 ${removedIds.size} 个应用；${failedDetails.length} 个失败并已保留：${failedDetails.join("、")}。`;
+    } else {
+      notice.value = `卸载失败，所选应用均已保留：${failedDetails.join("、")}。`;
+    }
+  } finally {
+    isUninstalling.value = false;
+  }
 }
 </script>
 
@@ -556,31 +532,11 @@ async function uninstallSelected() {
             <div v-if="expandedBundleIds.has(app.bundle_id)" class="file-tree">
               <section v-for="group in fileGroups(app)" :key="group.id" class="file-group">
                 <div class="group-row">
-                  <button
-                    type="button"
-                    :class="['selection-dot', 'small', { checked: isGroupSelected(app, group) }]"
-                    :aria-label="`选择 ${group.label}`"
-                    @click="toggleGroup(app, group)"
-                  >
-                    <span>✓</span>
-                  </button>
                   <span class="group-icon">{{ groupIcon(group.id) }}</span>
                   <strong>{{ group.label }}</strong>
                   <span class="group-size">{{ formatBytes(group.size) }}</span>
                 </div>
                 <div v-for="file in group.files" :key="file.path" class="file-row">
-                  <button
-                    type="button"
-                    :class="[
-                      'selection-dot',
-                      'tiny',
-                      { checked: isFileSelected(app, group, file) },
-                    ]"
-                    :aria-label="`选择 ${file.path}`"
-                    @click="toggleFile(app, group, file)"
-                  >
-                    <span>✓</span>
-                  </button>
                   <span class="file-icon">▰</span>
                   <span>{{ file.path.split('/').pop() || file.path }}</span>
                   <strong>{{ formatBytes(file.size) }}</strong>
@@ -601,7 +557,8 @@ async function uninstallSelected() {
       <button
         type="button"
         class="uninstall-orb"
-        :disabled="selectedBundleIds.size === 0 || isUninstalling"
+        :title="dataSource === 'demo' ? '演示模式不会执行卸载' : undefined"
+        :disabled="selectedBundleIds.size === 0 || isUninstalling || dataSource === 'demo'"
         @click="uninstallSelected"
       >
         {{ isUninstalling ? "卸载中" : "卸载" }}
@@ -613,7 +570,7 @@ async function uninstallSelected() {
       <span>✓</span>
       <p>
         释放 {{ formatBytes(uninstallReport.freed_bytes) }}，处理
-        {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件。快照：{{ uninstallReport.snapshot_id }}
+        {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件。项目已移入废纸篓，可在 macOS 废纸篓中自行恢复。
       </p>
     </div>
   </section>
@@ -1000,21 +957,21 @@ async function uninstallSelected() {
 }
 
 .group-row {
-  grid-template-columns: 22px 24px 1fr 82px;
+  grid-template-columns: 24px 1fr 82px;
   color: rgba(246, 252, 255, 0.92);
   font-size: 12px;
   font-weight: 900;
 }
 
 .file-row {
-  grid-template-columns: 22px 24px 1fr 82px;
+  grid-template-columns: 24px 1fr 82px;
   padding-left: 30px;
   color: rgba(238, 249, 255, 0.86);
   font-size: 12px;
   font-weight: 850;
 }
 
-.file-row span:nth-child(3) {
+.file-row span:nth-child(2) {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

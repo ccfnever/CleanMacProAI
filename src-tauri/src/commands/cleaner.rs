@@ -1,8 +1,7 @@
 /// 清理引擎 — Tauri Commands
 
 use crate::models::{CleanError, CleanReport};
-use crate::rules::{load_rules, CategoryRule};
-use chrono::Utc;
+use crate::rules::{load_rules, path_matches_any, CategoryRule};
 use glob::glob;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,14 +10,13 @@ use walkdir::WalkDir;
 const RULES_YAML: &str = include_str!("../rules/cleanup_rules.yaml");
 
 #[tauri::command]
-pub async fn clean_items(paths: Vec<String>, safe_mode: bool) -> Result<CleanReport, String> {
-    clean_paths(paths, safe_mode)
+pub async fn clean_items(paths: Vec<String>) -> Result<CleanReport, String> {
+    clean_paths(paths)
 }
 
 #[tauri::command]
 pub async fn clean_categories(
     category_ids: Vec<String>,
-    safe_mode: bool,
 ) -> Result<CleanReport, String> {
     let rules = load_rules(RULES_YAML)?;
     let mut paths = Vec::new();
@@ -41,21 +39,17 @@ pub async fn clean_categories(
             continue;
         }
 
-        paths.extend(resolve_cleanable_paths(rule)?);
+        paths.extend(resolve_cleanable_paths(rule, &rules.always_exclude)?);
     }
 
-    let mut report = clean_paths(paths, safe_mode)?;
+    let mut report = clean_paths(paths)?;
     report.skipped_count += skipped_errors.len() as u64;
     report.errors.extend(skipped_errors);
     Ok(report)
 }
 
 #[tauri::command]
-pub async fn get_clean_report(_snapshot_id: String) -> Result<CleanReport, String> {
-    Err("Clean report persistence is not implemented yet".to_string())
-}
-
-fn clean_paths(paths: Vec<String>, safe_mode: bool) -> Result<CleanReport, String> {
+fn clean_paths(paths: Vec<String>) -> Result<CleanReport, String> {
     let mut cleaned_count = 0_u64;
     let mut freed_bytes = 0_u64;
     let mut skipped_count = 0_u64;
@@ -74,13 +68,7 @@ fn clean_paths(paths: Vec<String>, safe_mode: bool) -> Result<CleanReport, Strin
         }
 
         let size = path_size(&path_buf);
-        let result = if safe_mode {
-            trash::delete(&path_buf).map_err(|e| e.to_string())
-        } else if path_buf.is_dir() {
-            fs::remove_dir_all(&path_buf).map_err(|e| e.to_string())
-        } else {
-            fs::remove_file(&path_buf).map_err(|e| e.to_string())
-        };
+        let result = trash::delete(&path_buf).map_err(|e| e.to_string());
 
         match result {
             Ok(()) => {
@@ -99,7 +87,6 @@ fn clean_paths(paths: Vec<String>, safe_mode: bool) -> Result<CleanReport, Strin
         freed_bytes,
         skipped_count,
         errors,
-        snapshot_id: format!("clean-{}", Utc::now().timestamp()),
     })
 }
 
@@ -127,11 +114,11 @@ fn expand_rule_patterns(paths: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn resolve_cleanable_paths(rule: &CategoryRule) -> Result<Vec<String>, String> {
+fn resolve_cleanable_paths(rule: &CategoryRule, global_exclude: &[String]) -> Result<Vec<String>, String> {
     let mut paths = Vec::new();
     for pattern in expand_rule_patterns(&rule.paths) {
         for path in glob(&pattern).map_err(|e| e.to_string())?.filter_map(Result::ok) {
-            if should_exclude(&path, &rule.exclude) {
+            if path_matches_any(&path, &rule.exclude) || path_matches_any(&path, global_exclude) {
                 continue;
             }
             paths.push(path.to_string_lossy().to_string());
@@ -163,14 +150,6 @@ fn is_safe_clean_target(path: &Path) -> bool {
     ];
 
     allowed_roots.iter().any(|root| canonical.starts_with(root))
-}
-
-fn should_exclude(path: &Path, exclude: &[String]) -> bool {
-    let path_text = path.to_string_lossy();
-    exclude.iter().any(|pattern| {
-        let needle = pattern.trim_matches('*');
-        !needle.is_empty() && path_text.contains(needle)
-    })
 }
 
 fn path_size(path: &Path) -> u64 {

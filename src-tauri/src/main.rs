@@ -31,11 +31,11 @@ fn main() {
             commands::scanner::cancel_scan,
             commands::cleaner::clean_items,
             commands::cleaner::clean_categories,
-            commands::cleaner::get_clean_report,
             commands::uninstaller::list_installed_apps,
             commands::uninstaller::inspect_installed_app,
             commands::uninstaller::uninstall_app,
             commands::system::get_disk_info,
+            commands::system::open_in_finder,
             commands::system::request_permissions,
         ])
         .run(tauri::generate_context!())

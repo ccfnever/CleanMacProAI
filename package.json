@@ -3,12 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0 <10"
+  },
+  "packageManager": "pnpm@9.15.4",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "lint": "eslint . --ext .vue,.ts --ignore-path .gitignore",
+    "lint": "eslint . --ext .vue,.ts --ignore-pattern node_modules --ignore-pattern dist --ignore-pattern src-tauri/target",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

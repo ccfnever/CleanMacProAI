@@ -1,17 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
+import { invoke } from "@tauri-apps/api/core";
 import { formatBytes, type CategoryResult, type FileInfo } from "../lib/demoData";
 import { scanPhases, useScannerStore } from "../stores/scanner";
 
 const scannerStore = useScannerStore();
 const {
   activePhase,
+  cleanPhase,
+  cleanProgress,
   cleanReport,
+  dataSource,
   expandedCategory,
   highCount,
+  isAllSelectableSelected,
   isCleaning,
   isScanning,
+  isSelectionPartial,
   mediumCount,
   notice,
   safeCount,
@@ -25,17 +31,29 @@ const {
   totalFileCount,
 } = storeToRefs(scannerStore);
 
-const { cleanSelected, startScan, toggleCategory, toggleExpanded } = scannerStore;
+const {
+  cleanSelected,
+  invertCategorySelection,
+  startScan,
+  toggleAllCategories,
+  toggleCategory,
+  toggleExpanded,
+} = scannerStore;
 const detailModalCategoryId = ref<string | null>(null);
+const openingPath = ref<string | null>(null);
 
 const scanHeadline = computed(() =>
-  scanResults.value.length ? formatBytes(totalCleanable.value) : "先做一次快速体检",
+  scanResults.value.length
+    ? formatBytes(totalCleanable.value)
+    : cleanReport.value ? "本次清理已完成" : "先做一次快速体检",
 );
 
 const scanSubcopy = computed(() =>
   scanResults.value.length
     ? `已识别 ${scanResults.value.length} 类可处理项目，共 ${totalFileCount.value.toLocaleString()} 个文件。低风险项目已自动勾选，其他项目交给你确认。`
-    : "扫描缓存、日志、构建文件和安装残留；先给出风险判断，再决定清理什么。",
+    : cleanReport.value
+      ? "当前扫描结果已在本地同步更新，可以重新扫描确认剩余空间。"
+      : "扫描缓存、日志、构建文件和安装残留；先给出风险判断，再决定清理什么。",
 );
 
 const selectedSummary = computed(() =>
@@ -81,6 +99,18 @@ function openDetailModal(categoryId: string) {
 function closeDetailModal() {
   detailModalCategoryId.value = null;
 }
+
+async function openFolder(path: string) {
+  if (openingPath.value) return;
+  openingPath.value = path;
+  try {
+    await invoke("open_in_finder", { path });
+  } catch (error) {
+    notice.value = "无法打开文件夹：" + (error instanceof Error ? error.message : String(error));
+  } finally {
+    openingPath.value = null;
+  }
+}
 </script>
 
 <template>
@@ -112,14 +142,59 @@ function closeDetailModal() {
 
     <p v-if="notice" class="notice">{{ notice }}</p>
 
+    <div v-if="isCleaning" class="cleaning-progress" role="status" aria-live="polite">
+      <strong>{{ cleanPhase }}</strong>
+      <span>{{ cleanProgress }}%</span>
+      <div
+        class="cleaning-progress-track"
+        role="progressbar"
+        aria-label="清理进度"
+        :aria-valuenow="cleanProgress"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
+        <span :style="{ width: `${cleanProgress}%` }"></span>
+      </div>
+    </div>
+
+    <div v-if="cleanReport" class="report-panel report-top">
+      <span>✓</span><div><strong>{{ cleanReport.errors.length ? "清理部分完成" : "清理完成" }}</strong>
+      <p>释放 {{ formatBytes(cleanReport.freed_bytes) }}，处理 {{ cleanReport.cleaned_count.toLocaleString() }} 个文件，跳过 {{ cleanReport.skipped_count }} 个。项目已移入废纸篓，可在 macOS 废纸篓中自行恢复。</p></div>
+    </div>
+
     <div v-if="scanResults.length" class="result-layout">
       <aside class="summary-panel">
         <p class="summary-label">建议本次释放</p>
         <strong>{{ formatBytes(selectedTotal) }}</strong>
         <span>{{ selectedSummary }}</span>
-        <button type="button" :disabled="selectedCategories.size === 0 || isCleaning" @click="cleanSelected">
+        <div class="selection-actions">
+          <label class="select-all-control">
+            <input
+              type="checkbox"
+              :checked="isAllSelectableSelected"
+              :indeterminate="isSelectionPartial"
+              :disabled="isCleaning"
+              @change="toggleAllCategories"
+            >
+            <span>{{ isAllSelectableSelected ? "取消全选" : "全选可清理项" }}</span>
+          </label>
+          <button
+            type="button"
+            class="invert-selection-button"
+            :disabled="isCleaning"
+            @click="invertCategorySelection"
+          >
+            反选
+          </button>
+        </div>
+        <button
+          type="button"
+          :disabled="selectedCategories.size === 0 || isCleaning || dataSource === 'demo'"
+          :title="dataSource === 'demo' ? '演示模式不会执行清理' : undefined"
+          @click="cleanSelected"
+        >
           <span>{{ isCleaning ? "◌" : "⌫" }}</span>
-          {{ isCleaning ? "清理中" : "清理已选安全项" }}
+          {{ isCleaning ? "清理中" : "清理已选项目" }}
         </button>
         <div class="risk-summary">
           <small><b>{{ safeCount }}</b> 安全</small>
@@ -135,7 +210,12 @@ function closeDetailModal() {
           :key="item.id"
           :class="['category-card', item.risk, { selected: selectedCategories.has(item.id) }]"
         >
-          <button type="button" class="category-main" @click="toggleCategory(item.id, item.risk)">
+          <button
+            type="button"
+            class="category-main"
+            :disabled="isCleaning"
+            @click="toggleCategory(item.id, item.risk)"
+          >
             <span class="checkmark">
               <span v-if="selectedCategories.has(item.id)">✓</span>
               <span v-else-if="item.risk === 'high'">!</span>
@@ -167,6 +247,16 @@ function closeDetailModal() {
                   <strong>{{ file.path }}</strong>
                   <small>{{ detailKind(file) }}</small>
                 </span>
+                <button
+                  type="button"
+                  class="open-folder-button"
+                  :disabled="dataSource === 'demo' || openingPath === file.path"
+                  :title="dataSource === 'demo' ? '请在 macOS App 中打开文件夹' : undefined"
+                  :aria-label="'在 Finder 中打开 ' + file.path"
+                  @click.stop="openFolder(file.path)"
+                >
+                  {{ openingPath === file.path ? "打开中" : "打开文件夹" }}
+                </button>
                 <b>{{ formatBytes(file.size) }}</b>
               </div>
             </div>
@@ -184,21 +274,10 @@ function closeDetailModal() {
       </div>
     </div>
 
-    <div v-else-if="!isScanning" class="empty-state">
+    <div v-else-if="!isScanning && !cleanReport" class="empty-state">
       <span>⌕</span>
       <h3>还没有扫描记录</h3>
       <p>开始后会自动归类可清理空间，并把风险最低的项目先选好。</p>
-    </div>
-
-    <div v-if="cleanReport" class="report-panel">
-      <span>✓</span>
-      <div>
-        <strong>清理完成</strong>
-        <p>
-          释放 {{ formatBytes(cleanReport.freed_bytes) }}，处理 {{ cleanReport.cleaned_count.toLocaleString() }} 个文件，
-          跳过 {{ cleanReport.skipped_count }} 个。快照：{{ cleanReport.snapshot_id }}
-        </p>
-      </div>
     </div>
 
     <div
@@ -224,6 +303,16 @@ function closeDetailModal() {
               <strong>{{ file.path }}</strong>
               <small>{{ detailKind(file) }}</small>
             </span>
+            <button
+              type="button"
+              class="open-folder-button"
+              :disabled="dataSource === 'demo' || openingPath === file.path"
+              :title="dataSource === 'demo' ? '请在 macOS App 中打开文件夹' : undefined"
+              :aria-label="'在 Finder 中打开 ' + file.path"
+              @click.stop="openFolder(file.path)"
+            >
+              {{ openingPath === file.path ? "打开中" : "打开文件夹" }}
+            </button>
             <b>{{ formatBytes(file.size) }}</b>
           </div>
         </div>
@@ -372,6 +461,70 @@ h1 {
   font-weight: 750;
 }
 
+.cleaning-progress {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 4px 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(83, 216, 209, 0.35);
+  border-radius: 11px;
+  background: rgba(35, 130, 132, 0.2);
+  color: #fff;
+  font-size: 13px;
+}
+
+.cleaning-progress > span {
+  justify-self: end;
+  color: rgba(235, 248, 255, 0.7);
+}
+
+.cleaning-progress-track {
+  grid-column: 1 / -1;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 99px;
+  background: rgba(235, 248, 255, 0.18);
+  overflow: hidden;
+}
+
+.cleaning-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #53d8d1;
+  transition: width 220ms ease;
+}
+
+.report-top {
+  margin-top: 12px;
+}
+
+.open-folder-button {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  min-width: 52px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: rgba(218, 244, 255, 0.64);
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+  transition: color 150ms ease, opacity 150ms ease;
+}
+
+.open-folder-button:hover:not(:disabled),
+.open-folder-button:focus-visible {
+  color: #fff;
+}
+
+.open-folder-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .result-layout {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
@@ -409,6 +562,52 @@ h1 {
   color: rgba(235, 248, 255, 0.68);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.selection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  min-height: 36px;
+  margin: -4px 0 10px;
+}
+
+.select-all-control {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: rgba(235, 248, 255, 0.78);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.select-all-control input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #35c8c0;
+}
+
+.select-all-control:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.summary-panel .invert-selection-button {
+  width: auto;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid rgba(235, 248, 255, 0.18);
+  background: rgba(235, 248, 255, 0.08);
+  box-shadow: none;
+  color: rgba(235, 248, 255, 0.78);
+  font-size: 11px;
+}
+
+.summary-panel .invert-selection-button:hover {
+  box-shadow: none;
 }
 
 .summary-panel button {
@@ -472,6 +671,10 @@ h1 {
   background: transparent;
   color: inherit;
   text-align: left;
+}
+
+.category-main:disabled {
+  cursor: wait;
 }
 
 .checkmark {
@@ -580,7 +783,7 @@ h1 {
 
 .detail-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto minmax(58px, auto);
   align-items: center;
   gap: 10px;
   padding: 8px 10px;

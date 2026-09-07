@@ -2,7 +2,6 @@
 import { ref } from "vue";
 import { invokeOrDemo } from "../lib/demoData";
 
-const safeMode = ref(true);
 const showHiddenFiles = ref(false);
 const autoCleanCache = ref(false);
 const autoUpdate = ref(true);
@@ -12,6 +11,10 @@ const permissionStatus = ref("建议开启，用于扫描系统级缓存和日�
 
 async function openFullDiskAccess() {
   const result = await invokeOrDemo<boolean>("request_permissions", false);
+  if (result.source === "error") {
+    permissionStatus.value = `无法打开系统设置：${result.error}`;
+    return;
+  }
   permissionStatus.value = result.source === "native"
     ? "已打开系统设置。添加 CleanMacProAI 后请重启应用。"
     : "浏览器预览无法打开系统设置，请在 macOS App 中操作。";
@@ -37,14 +40,6 @@ async function openFullDiskAccess() {
             <p>控制删除方式和扫描边界。</p>
           </div>
         </div>
-
-        <label class="setting-row">
-          <span>
-            <strong>安全模式</strong>
-            <small>所有项目先移入废纸篓，不直接删除。</small>
-          </span>
-          <input v-model="safeMode" type="checkbox" />
-        </label>
 
         <label class="setting-row">
           <span>

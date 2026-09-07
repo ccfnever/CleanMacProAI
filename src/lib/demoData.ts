@@ -30,8 +30,11 @@ export interface CleanReport {
   freed_bytes: number;
   skipped_count: number;
   errors: Array<{ path: string; reason: string }>;
-  snapshot_id: string;
 }
+
+export type InvokeResult<T> =
+  | { source: "native" | "demo" | "empty"; data: T }
+  | { source: "error"; error: string };
 
 export interface InstalledApp {
   name: string;
@@ -59,7 +62,8 @@ export async function invokeOrDemo<T>(
   fallback: T,
   args?: Record<string, unknown>,
   timeoutMs = 0,
-): Promise<{ data: T; source: "native" | "demo"; error?: string }> {
+): Promise<InvokeResult<T>> {
+  const isNativeRuntime = Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
   try {
     const nativeCall = invoke<T>(command, args);
     const data = timeoutMs > 0
@@ -78,16 +82,13 @@ export async function invokeOrDemo<T>(
       scanData.categories.length === 0;
 
     if (isEmptyArray || isEmptyScan) {
-      return { data: fallback, source: "demo" };
+      return isNativeRuntime ? { data, source: "empty" } : { data: fallback, source: "demo" };
     }
 
     return { data, source: "native" };
   } catch (error) {
-    return {
-      data: fallback,
-      source: "demo",
-      error: error instanceof Error ? error.message : String(error),
-    };
+    if (!isNativeRuntime) return { data: fallback, source: "demo" };
+    return { source: "error", error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -243,5 +244,4 @@ export const demoCleanReport: CleanReport = {
   freed_bytes: 17_669_455_872,
   skipped_count: 3,
   errors: [],
-  snapshot_id: "demo-snapshot-20260517",
 };

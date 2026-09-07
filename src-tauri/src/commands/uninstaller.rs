@@ -1,7 +1,6 @@
 /// 软件卸载 — Tauri Commands
 
 use crate::models::{CleanError, CleanReport, FileInfo, InstalledApp};
-use chrono::Utc;
 use plist::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -62,7 +61,7 @@ pub async fn inspect_installed_app(
 }
 
 #[tauri::command]
-pub async fn uninstall_app(bundle_id: String, move_to_trash: bool) -> Result<CleanReport, String> {
+pub async fn uninstall_app(bundle_id: String) -> Result<CleanReport, String> {
     let app = find_app_by_bundle_id(&bundle_id, true)
         .ok_or_else(|| "Application not found".to_string())?;
 
@@ -93,13 +92,7 @@ pub async fn uninstall_app(bundle_id: String, move_to_trash: bool) -> Result<Cle
 
         let size = path_size(&path);
         let count = path_count_for_report(&path);
-        let result = if move_to_trash {
-            trash::delete(&path).map_err(|e| e.to_string())
-        } else if path.is_dir() {
-            fs::remove_dir_all(&path).map_err(|e| e.to_string())
-        } else {
-            fs::remove_file(&path).map_err(|e| e.to_string())
-        };
+        let result = trash::delete(&path).map_err(|e| e.to_string());
 
         match result {
             Ok(()) => {
@@ -118,7 +111,6 @@ pub async fn uninstall_app(bundle_id: String, move_to_trash: bool) -> Result<Cle
         freed_bytes,
         skipped_count,
         errors,
-        snapshot_id: format!("uninstall-{}", Utc::now().timestamp()),
     })
 }
 

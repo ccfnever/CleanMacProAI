@@ -12,6 +12,7 @@ type ViewName = "dashboard" | "scanner" | "uninstaller" | "settings";
 const currentView = ref<ViewName>("dashboard");
 const diskInfo = ref<DiskInfo>(demoDiskInfo);
 const dataSource = ref<"native" | "demo">("demo");
+const diskNotice = ref<string | null>(null);
 
 const currentTitle = computed(() => {
   const titles: Record<ViewName, string> = {
@@ -45,8 +46,13 @@ function navigate(view: string) {
 
 onMounted(async () => {
   const result = await invokeOrDemo<DiskInfo>("get_disk_info", demoDiskInfo);
+  if (result.source === "error") {
+    dataSource.value = "demo";
+    diskNotice.value = `无法读取本机磁盘信息：${result.error}`;
+    return;
+  }
   diskInfo.value = result.data;
-  dataSource.value = result.source;
+  dataSource.value = result.source === "native" ? "native" : "demo";
 });
 </script>
 
@@ -59,6 +65,7 @@ onMounted(async () => {
     />
 
     <main :class="stageClass">
+      <p v-if="diskNotice" class="app-notice" role="alert">{{ diskNotice }}</p>
       <header v-if="currentView !== 'uninstaller'" class="topbar">
         <div>
           <p class="eyebrow">CleanMacProAI / Local First</p>
@@ -161,6 +168,18 @@ button {
     --stage-bottom 560ms ease,
     --stage-glow 560ms ease,
     color 320ms ease;
+}
+
+.app-notice {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 215, 92, 0.28);
+  border-radius: 10px;
+  background: rgba(96, 47, 35, 0.48);
+  color: #fff4d4;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .content-stage.view-dashboard {

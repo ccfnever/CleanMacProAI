@@ -1,7 +1,7 @@
 /// 扫描引擎 — Tauri Commands
 
 use crate::models::{CategoryResult, FileInfo, ScanProgress, ScanResult};
-use crate::rules::{load_rules, validate_rules};
+use crate::rules::{load_rules, path_matches_any, validate_rules};
 use glob::glob;
 use std::collections::HashSet;
 use std::fs;
@@ -67,6 +67,7 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
                 collect_detail_item(
                     &path,
                     &rule.exclude,
+                    &rules.always_exclude,
                     rule.min_size,
                     &mut detail_items,
                     &mut seen_detail_paths,
@@ -75,6 +76,7 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
                 scan_path(
                     &path,
                     &rule.exclude,
+                    &rules.always_exclude,
                     rule.min_size,
                     &mut file_count,
                     &mut category_size,
@@ -148,11 +150,12 @@ fn expand_rule_patterns(paths: &[String]) -> Vec<String> {
 fn scan_path(
     path: &Path,
     exclude: &[String],
+    global_exclude: &[String],
     min_size: u64,
     file_count: &mut u64,
     category_size: &mut u64,
 ) {
-    if should_exclude(path, exclude) {
+    if path_matches_any(path, exclude) || path_matches_any(path, global_exclude) {
         return;
     }
 
@@ -175,7 +178,10 @@ fn scan_path(
         }
 
         let entry_path = entry.path();
-        if entry_path.is_file() && !should_exclude(entry_path, exclude) {
+        if entry_path.is_file()
+            && !path_matches_any(entry_path, exclude)
+            && !path_matches_any(entry_path, global_exclude)
+        {
             collect_file(entry_path, min_size, file_count, category_size);
         }
     }
@@ -202,11 +208,12 @@ fn collect_file(
 fn collect_detail_item(
     path: &Path,
     exclude: &[String],
+    global_exclude: &[String],
     min_size: u64,
     detail_items: &mut Vec<FileInfo>,
     seen_paths: &mut HashSet<String>,
 ) {
-    if should_exclude(path, exclude) {
+    if path_matches_any(path, exclude) || path_matches_any(path, global_exclude) {
         return;
     }
 
@@ -215,7 +222,7 @@ fn collect_detail_item(
     };
     let is_dir = metadata.is_dir();
     let size = if is_dir {
-        detail_path_size(path, exclude, min_size)
+        detail_path_size(path, exclude, global_exclude, min_size)
     } else {
         metadata.len()
     };
@@ -241,7 +248,7 @@ fn collect_detail_item(
     });
 }
 
-fn detail_path_size(path: &Path, exclude: &[String], min_size: u64) -> u64 {
+fn detail_path_size(path: &Path, exclude: &[String], global_exclude: &[String], min_size: u64) -> u64 {
     if path.is_file() {
         let Ok(metadata) = fs::metadata(path) else {
             return 0;
@@ -259,19 +266,15 @@ fn detail_path_size(path: &Path, exclude: &[String], min_size: u64) -> u64 {
         .into_iter()
         .filter_map(Result::ok)
         .map(|entry| entry.into_path())
-        .filter(|entry_path| entry_path.is_file() && !should_exclude(entry_path, exclude))
+        .filter(|entry_path| {
+            entry_path.is_file()
+                && !path_matches_any(entry_path, exclude)
+                && !path_matches_any(entry_path, global_exclude)
+        })
         .filter_map(|entry_path| fs::metadata(entry_path).ok())
         .map(|metadata| metadata.len())
         .filter(|size| *size >= min_size)
         .sum()
-}
-
-fn should_exclude(path: &Path, exclude: &[String]) -> bool {
-    let path_text = path.to_string_lossy();
-    exclude.iter().any(|pattern| {
-        let needle = pattern.trim_matches('*');
-        !needle.is_empty() && path_text.contains(needle)
-    })
 }
 
 fn display_path(path: &Path) -> String {

@@ -1,7 +1,7 @@
 /// 系统操作 — Tauri Commands
 
 use crate::models::DiskInfo;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[tauri::command]
@@ -51,6 +51,45 @@ pub async fn request_permissions() -> Result<bool, String> {
         .status()
         .map_err(|e| format!("Failed to open System Settings: {}", e))?;
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn open_in_finder(path: String) -> Result<(), String> {
+    let expanded = expand_home(&path);
+    if !expanded.is_absolute() {
+        return Err("Finder paths must be absolute or start with ~/".to_string());
+    }
+    let canonical = expanded
+        .canonicalize()
+        .map_err(|error| format!("Path does not exist or cannot be opened: {error}"))?;
+
+    let mut command = Command::new("/usr/bin/open");
+    if canonical.is_dir() {
+        command.arg(&canonical);
+    } else {
+        command.arg("-R").arg(&canonical);
+    }
+
+    let status = command
+        .status()
+        .map_err(|error| format!("Failed to open Finder: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Finder exited with status {status}"))
+    }
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
 }
 
 fn parse_kilobytes(value: &str) -> Result<u64, String> {
