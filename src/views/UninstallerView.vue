@@ -70,13 +70,9 @@ const selectedApps = computed(() =>
   apps.value.filter((app) => selectedBundleIds.value.has(app.bundle_id)),
 );
 
-const selectedTotal = computed(() =>
-  selectedApps.value.reduce((sum, app) => sum + appTotalSize(app), 0),
-);
+const selectedTotal = computed(() => uniqueAppsTotalSize(selectedApps.value));
 
-const filteredTotalSize = computed(() =>
-  filteredApps.value.reduce((sum, app) => sum + appTotalSize(app), 0),
-);
+const filteredTotalSize = computed(() => uniqueAppsTotalSize(filteredApps.value));
 
 const listSizeLabel = computed(() => {
   if (filteredTotalSize.value <= 0) return "";
@@ -140,6 +136,25 @@ const isInspecting = computed(() => (bundleId: string) => inspectingBundleId.val
 
 function appTotalSize(app: InstalledApp): number {
   return app.app_size + app.related_size;
+}
+
+function uniqueAppsTotalSize(appList: InstalledApp[]): number {
+  const relatedPaths = new Set<string>();
+  let total = appList.reduce((sum, app) => sum + app.app_size, 0);
+
+  for (const app of appList) {
+    if (app.related_files.length === 0) {
+      total += app.related_size;
+      continue;
+    }
+    for (const file of app.related_files) {
+      const path = normalizePath(file.path);
+      if (relatedPaths.has(path)) continue;
+      relatedPaths.add(path);
+      total += file.size;
+    }
+  }
+  return total;
 }
 
 function appSizeLabel(app: InstalledApp): string {
@@ -364,6 +379,13 @@ function toggleSelected(bundleId: string) {
   uninstallReport.value = null;
 }
 
+async function openAppDirectory(app: InstalledApp) {
+  const result = await invokeOrDemo<void>("open_in_finder", undefined, { path: app.app_path });
+  if (result.source === "error") {
+    notice.value = `无法打开 ${app.name} 的应用目录：${result.error}`;
+  }
+}
+
 function selectAllVisible() {
   const next = new Set(selectedBundleIds.value);
   for (const app of filteredApps.value) next.add(app.bundle_id);
@@ -552,6 +574,15 @@ function normalizePath(path: string): string {
               </button>
               <span class="chevron">{{ expandedBundleIds.has(app.bundle_id) ? "⌄" : "›" }}</span>
               <strong class="row-size">{{ appSizeLabel(app) }}</strong>
+              <button
+                type="button"
+                class="open-app-button"
+                :aria-label="`打开 ${app.name} 的应用目录`"
+                :title="`在 Finder 中打开 ${app.name} 的应用目录`"
+                @click.stop="openAppDirectory(app)"
+              >
+                ↗
+              </button>
             </div>
 
             <div v-if="expandedBundleIds.has(app.bundle_id)" class="file-tree">
@@ -875,7 +906,7 @@ function normalizePath(path: string): string {
 
 .app-main {
   display: grid;
-  grid-template-columns: 26px 1fr 22px 92px;
+  grid-template-columns: 26px minmax(0, 1fr) 22px 92px 34px;
   align-items: center;
   gap: 10px;
   min-height: 46px;
@@ -979,6 +1010,26 @@ function normalizePath(path: string): string {
 .chevron,
 .row-size {
   justify-self: end;
+}
+
+.open-app-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(215, 239, 255, 0.2);
+  border-radius: 7px;
+  background: rgba(22, 78, 111, 0.28);
+  color: rgba(239, 250, 255, 0.78);
+  font-size: 17px;
+  line-height: 1;
+}
+
+.open-app-button:hover {
+  border-color: rgba(215, 239, 255, 0.45);
+  background: rgba(22, 78, 111, 0.5);
+  color: #fff;
 }
 
 .chevron {

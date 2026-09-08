@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use walkdir::WalkDir;
 
 const MAX_RELATED_PREVIEW_FILES: usize = 24;
 
@@ -18,6 +19,7 @@ pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
     }
 
     let mut apps = Vec::new();
+    let mut seen_paths = HashSet::new();
     for root in roots {
         if !root.exists() {
             continue;
@@ -33,6 +35,10 @@ pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
                 continue;
             }
 
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !seen_paths.insert(canonical) {
+                continue;
+            }
             if let Some(app) = read_app_bundle(&path, false) {
                 apps.push(app);
             }
@@ -354,8 +360,7 @@ fn related_app_data(name: &str, bundle_id: &str) -> RelatedAppData {
         };
     };
 
-    let keywords = app_match_keywords(name, bundle_id);
-    let candidate_paths = related_library_matches(&home, &keywords);
+    let candidate_paths = related_library_matches(&home, name, bundle_id);
 
     let mut total_size = 0_u64;
     let mut total_count = 0_u64;
@@ -392,29 +397,7 @@ fn related_app_data(name: &str, bundle_id: &str) -> RelatedAppData {
     }
 }
 
-fn app_match_keywords(name: &str, bundle_id: &str) -> Vec<String> {
-    let mut keywords = Vec::new();
-    add_keyword(&mut keywords, name);
-    add_keyword(&mut keywords, bundle_id);
-
-    for segment in bundle_id.split(['.', '-', '_']) {
-        let segment = segment.trim();
-        if segment.len() >= 3 && !matches!(segment, "app" | "com" | "net" | "org" | "www") {
-            add_keyword(&mut keywords, segment);
-        }
-    }
-
-    keywords
-}
-
-fn add_keyword(keywords: &mut Vec<String>, value: &str) {
-    let normalized = value.trim().to_lowercase();
-    if normalized.len() >= 2 && !keywords.contains(&normalized) {
-        keywords.push(normalized);
-    }
-}
-
-fn related_library_matches(home: &Path, keywords: &[String]) -> Vec<PathBuf> {
+fn related_library_matches(home: &Path, name: &str, bundle_id: &str) -> Vec<PathBuf> {
     let roots = [
         home.join("Library/Caches"),
         home.join("Library/Logs"),
@@ -437,16 +420,35 @@ fn related_library_matches(home: &Path, keywords: &[String]) -> Vec<PathBuf> {
             let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
-            let normalized = file_name.to_lowercase();
-            if keywords.iter().any(|keyword| normalized.contains(keyword))
-                && seen.insert(path.clone())
-            {
+            if is_related_filename(file_name, name, bundle_id) && seen.insert(path.clone()) {
                 paths.push(path);
             }
         }
     }
 
     paths
+}
+
+fn is_related_filename(file_name: &str, name: &str, bundle_id: &str) -> bool {
+    let normalized_file = file_name.trim().trim_end_matches(".plist").to_lowercase();
+    let normalized_name = normalize_match_text(name);
+    let normalized_bundle_id = bundle_id.trim().to_lowercase();
+
+    (!normalized_name.is_empty() && normalize_match_text(&normalized_file) == normalized_name)
+        || normalized_file == normalized_bundle_id
+        || normalized_file.starts_with(&format!("{}.", normalized_bundle_id))
+        || normalized_file.ends_with(&format!(".{}", normalized_bundle_id))
+        || normalized_file.contains(&format!(".{}.", normalized_bundle_id))
+}
+
+fn normalize_match_text(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(".plist")
+        .chars()
+        .filter(|ch| ch.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn path_size(path: &Path) -> u64 {
@@ -458,28 +460,30 @@ fn path_size(path: &Path) -> u64 {
         return 0;
     }
 
-    du_size(path).unwrap_or(0)
-}
-
-fn du_size(path: &Path) -> Option<u64> {
-    Command::new("/usr/bin/du")
-        .args(["-sk"])
-        .arg(path)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            String::from_utf8(output.stdout)
-                .ok()
-                .and_then(|stdout| stdout.split_whitespace().next().map(str::to_string))
-        })
-        .and_then(|kilobytes| kilobytes.parse::<u64>().ok())
-        .map(|kilobytes| kilobytes.saturating_mul(1024))
+    WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
 }
 
 fn path_count_for_report(path: &Path) -> u64 {
-    let _ = path;
-    1
+    if path.is_file() {
+        return 1;
+    }
+    if !path.is_dir() {
+        return 0;
+    }
+    WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .count() as u64
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -544,6 +548,33 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn related_matching_does_not_match_similar_names() {
+        assert!(is_related_filename(
+            "com.tencent.xin.plist",
+            "微信",
+            "com.tencent.xin"
+        ));
+        assert!(is_related_filename(
+            "com.tencent.xin.login.plist",
+            "微信",
+            "com.tencent.xin"
+        ));
+        assert!(is_related_filename(
+            "5A4RE8SF68.com.tencent.xin.IPCHelper",
+            "微信",
+            "com.tencent.xin"
+        ));
+        assert!(!is_related_filename("企业微信", "微信", "com.tencent.xin"));
+        assert!(!is_related_filename("微盘", "微信", "com.tencent.xin"));
+    }
+
+    #[test]
+    fn related_matching_accepts_exact_app_name_only() {
+        assert!(is_related_filename("WeChat", "WeChat", "com.tencent.xin"));
+        assert!(!is_related_filename("WeChat Helper", "WeChat", "com.tencent.xin"));
     }
 
 }

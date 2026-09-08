@@ -64,7 +64,9 @@ pub async fn open_in_finder(path: String) -> Result<(), String> {
         .map_err(|error| format!("Path does not exist or cannot be opened: {error}"))?;
 
     let mut command = Command::new("/usr/bin/open");
-    if canonical.is_dir() {
+    if canonical.extension().and_then(|extension| extension.to_str()) == Some("app") {
+        command.arg("-R").arg(&canonical);
+    } else if canonical.is_dir() {
         command.arg(&canonical);
     } else {
         command.arg("-R").arg(&canonical);
