@@ -1,5 +1,6 @@
 /// 清理引擎 — Tauri Commands
 
+use super::trash_support::move_to_trash;
 use crate::models::{CleanError, CleanReport};
 use crate::rules::{load_rules, path_matches_any, CategoryRule};
 use glob::glob;
@@ -68,7 +69,7 @@ fn clean_paths(paths: Vec<String>) -> Result<CleanReport, String> {
         }
 
         let size = path_size(&path_buf);
-        let result = trash::delete(&path_buf).map_err(|e| e.to_string());
+        let result = move_to_trash(&path_buf);
 
         match result {
             Ok(()) => {

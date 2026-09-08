@@ -1,5 +1,6 @@
 /// 软件卸载 — Tauri Commands
 
+use super::trash_support::move_to_trash;
 use crate::models::{CleanError, CleanReport, FileInfo, InstalledApp};
 use plist::Value;
 use std::collections::HashSet;
@@ -61,9 +62,11 @@ pub async fn inspect_installed_app(
 }
 
 #[tauri::command]
-pub async fn uninstall_app(bundle_id: String) -> Result<CleanReport, String> {
-    let app = find_app_by_bundle_id(&bundle_id, true)
-        .ok_or_else(|| "Application not found".to_string())?;
+pub async fn uninstall_app(
+    bundle_id: String,
+    app_path: Option<String>,
+) -> Result<CleanReport, String> {
+    let app = resolve_app_for_uninstall(&bundle_id, app_path)?;
 
     if app.is_system_app {
         return Err("Refusing to uninstall a system application".to_string());
@@ -92,7 +95,7 @@ pub async fn uninstall_app(bundle_id: String) -> Result<CleanReport, String> {
 
         let size = path_size(&path);
         let count = path_count_for_report(&path);
-        let result = trash::delete(&path).map_err(|e| e.to_string());
+        let result = move_to_trash(&path);
 
         match result {
             Ok(()) => {
@@ -112,6 +115,27 @@ pub async fn uninstall_app(bundle_id: String) -> Result<CleanReport, String> {
         skipped_count,
         errors,
     })
+}
+
+fn resolve_app_for_uninstall(
+    bundle_id: &str,
+    app_path: Option<String>,
+) -> Result<InstalledApp, String> {
+    if let Some(app_path) = app_path {
+        let path = expand_home(&app_path);
+        if !is_safe_uninstall_target(&path) {
+            return Err("Application path is outside uninstall safety boundaries".to_string());
+        }
+
+        let app = read_app_bundle(&path, true)
+            .ok_or_else(|| format!("Application not found at '{}'", app_path))?;
+        if app.bundle_id != bundle_id {
+            return Err("Application bundle identifier does not match the selected app".to_string());
+        }
+        return Ok(app);
+    }
+
+    find_app_by_bundle_id(bundle_id, true).ok_or_else(|| "Application not found".to_string())
 }
 
 fn find_app_by_bundle_id(bundle_id: &str, include_details: bool) -> Option<InstalledApp> {
@@ -396,6 +420,9 @@ fn related_library_matches(home: &Path, keywords: &[String]) -> Vec<PathBuf> {
         home.join("Library/Logs"),
         home.join("Library/Preferences"),
         home.join("Library/Application Support"),
+        home.join("Library/Containers"),
+        home.join("Library/Group Containers"),
+        home.join("Library/Saved Application State"),
     ];
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
@@ -492,6 +519,8 @@ fn is_safe_uninstall_target(path: &Path) -> bool {
         || text.starts_with(&format!("{}/Library/Logs/", home_text))
         || text.starts_with(&format!("{}/Library/Preferences/", home_text))
         || text.starts_with(&format!("{}/Library/Application Support/", home_text))
+        || text.starts_with(&format!("{}/Library/Containers/", home_text))
+        || text.starts_with(&format!("{}/Library/Group Containers/", home_text))
         || text.starts_with(&format!("{}/Library/Saved Application State/", home_text))
 }
 
@@ -516,4 +545,5 @@ mod tests {
             );
         }
     }
+
 }

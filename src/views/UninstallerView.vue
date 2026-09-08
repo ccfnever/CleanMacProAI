@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
-  demoApps,
-  demoCleanReport,
   formatBytes,
   invokeOrDemo,
   type CleanReport,
@@ -40,6 +38,7 @@ const apps = ref<InstalledApp[]>([]);
 const isLoading = ref(true);
 const inspectingBundleId = ref<string | null>(null);
 const isUninstalling = ref(false);
+const isConfirmingUninstall = ref(false);
 const query = ref("");
 const activeFacet = ref("status:all");
 const selectedBundleIds = ref<Set<string>>(new Set());
@@ -49,7 +48,7 @@ const isAutoScanning = ref(false);
 const autoScanCompletedCount = ref(0);
 const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
-const dataSource = ref<"native" | "demo">("demo");
+const dataSource = ref<"native" | "unavailable">("unavailable");
 let isUnmounted = false;
 
 const filteredApps = computed(() => {
@@ -263,27 +262,31 @@ function groupIcon(groupId: FileGroupId): string {
 }
 
 onMounted(async () => {
-  const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", demoApps, undefined, 5000);
+  document.addEventListener("keydown", handleDialogKeydown);
+  const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", [], undefined, 5000);
   if (result.source === "error") {
     notice.value = `无法读取应用列表：${result.error}`;
     isLoading.value = false;
     return;
   }
+  if (result.source === "demo") {
+    apps.value = [];
+    notice.value = "请从 CleanMacProAI 的 macOS 桌面应用打开卸载器；浏览器预览无法卸载应用。";
+    isLoading.value = false;
+    return;
+  }
   apps.value = result.data;
-  dataSource.value = result.source === "demo" ? "demo" : "native";
+  dataSource.value = "native";
   selectedBundleIds.value = new Set();
   expandedBundleIds.value = new Set();
-  notice.value = result.source === "demo"
-    ? "当前展示演示应用列表；演示模式不会执行卸载。"
-    : result.source === "empty"
-      ? "没有找到可卸载的应用。"
-      : null;
+  notice.value = result.source === "empty" ? "没有找到可卸载的应用。" : null;
   isLoading.value = false;
   void scanAppsInDisplayOrder(result.data);
 });
 
 onUnmounted(() => {
   isUnmounted = true;
+  document.removeEventListener("keydown", handleDialogKeydown);
 });
 
 async function scanAppsInDisplayOrder(appList: InstalledApp[]) {
@@ -369,7 +372,7 @@ function selectAllVisible() {
 
 async function uninstallSelected() {
   if (selectedApps.value.length === 0) return;
-  if (!window.confirm(`确认卸载 ${selectedApps.value.length} 个应用及其关联残留？`)) return;
+  isConfirmingUninstall.value = false;
   isUninstalling.value = true;
   uninstallReport.value = null;
   const targets = [...selectedApps.value];
@@ -380,13 +383,14 @@ async function uninstallSelected() {
 
   try {
     for (const app of targets) {
-      const fallback: CleanReport = {
-        ...demoCleanReport,
-        cleaned_count: app.related_count + 1,
-        freed_bytes: appTotalSize(app),
-      };
-      const result = await invokeOrDemo<CleanReport>("uninstall_app", fallback, {
+      const result = await invokeOrDemo<CleanReport>("uninstall_app", {
+        cleaned_count: 0,
+        freed_bytes: 0,
+        skipped_count: 0,
+        errors: [],
+      }, {
         bundleId: app.bundle_id,
+        appPath: app.app_path,
       });
       if (result.source === "error") {
         failedIds.add(app.bundle_id);
@@ -398,15 +402,19 @@ async function uninstallSelected() {
         failedDetails.push(`${app.name}（演示模式未执行）`);
         continue;
       }
-      if (result.data.errors.length > 0) {
+      const appRemovalError = result.data.errors.find(
+        (error) => normalizePath(error.path) === normalizePath(app.app_path),
+      );
+      if (appRemovalError) {
         failedIds.add(app.bundle_id);
-        failedDetails.push(`${app.name}（${result.data.errors[0].reason}）`);
+        failedDetails.push(`${app.name}（${appRemovalError.reason}）`);
         continue;
       }
       removedIds.add(app.bundle_id);
       aggregate.cleaned_count += result.data.cleaned_count;
       aggregate.freed_bytes += result.data.freed_bytes;
       aggregate.skipped_count += result.data.skipped_count;
+      aggregate.errors.push(...result.data.errors);
     }
 
     if (removedIds.size > 0) {
@@ -418,8 +426,10 @@ async function uninstallSelected() {
       [...expandedBundleIds.value].filter((bundleId) => !removedIds.has(bundleId)),
     );
 
-    if (removedIds.size === targets.length) {
+    if (removedIds.size === targets.length && aggregate.errors.length === 0) {
       notice.value = `已将 ${removedIds.size} 个应用及关联残留移入废纸篓。`;
+    } else if (removedIds.size === targets.length) {
+      notice.value = `已将 ${removedIds.size} 个应用移入废纸篓；${aggregate.errors.length} 个关联残留未能处理。`;
     } else if (removedIds.size > 0) {
       notice.value = `已卸载 ${removedIds.size} 个应用；${failedDetails.length} 个失败并已保留：${failedDetails.join("、")}。`;
     } else {
@@ -428,6 +438,21 @@ async function uninstallSelected() {
   } finally {
     isUninstalling.value = false;
   }
+}
+
+function requestUninstall() {
+  if (selectedApps.value.length === 0 || isUninstalling.value) return;
+  isConfirmingUninstall.value = true;
+}
+
+function handleDialogKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && !isUninstalling.value) {
+    isConfirmingUninstall.value = false;
+  }
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\/$/, "");
 }
 </script>
 
@@ -557,9 +582,9 @@ async function uninstallSelected() {
       <button
         type="button"
         class="uninstall-orb"
-        :title="dataSource === 'demo' ? '演示模式不会执行卸载' : undefined"
-        :disabled="selectedBundleIds.size === 0 || isUninstalling || dataSource === 'demo'"
-        @click="uninstallSelected"
+        :title="dataSource !== 'native' ? '请在 macOS 桌面应用中执行卸载' : undefined"
+        :disabled="selectedBundleIds.size === 0 || isUninstalling || dataSource !== 'native'"
+        @click="requestUninstall"
       >
         {{ isUninstalling ? "卸载中" : "卸载" }}
       </button>
@@ -573,6 +598,34 @@ async function uninstallSelected() {
         {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件。项目已移入废纸篓，可在 macOS 废纸篓中自行恢复。
       </p>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="isConfirmingUninstall"
+        class="confirm-backdrop"
+        role="presentation"
+        @click.self="isConfirmingUninstall = false"
+      >
+        <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="uninstall-title">
+          <div class="confirm-symbol" aria-hidden="true">!</div>
+          <div class="confirm-copy">
+            <p>应用卸载</p>
+            <h2 id="uninstall-title">将 {{ selectedApps.length }} 个应用移入废纸篓？</h2>
+            <span>
+              应用程序及扫描到的关联文件将一并处理，预计释放 {{ formatBytes(selectedTotal) }}。
+            </span>
+          </div>
+          <div class="confirm-actions">
+            <button type="button" class="confirm-cancel" @click="isConfirmingUninstall = false">
+              取消
+            </button>
+            <button type="button" class="confirm-submit" @click="uninstallSelected">
+              移入废纸篓
+            </button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -1035,6 +1088,95 @@ async function uninstallSelected() {
 .uninstall-orb:disabled {
   opacity: 0.62;
   cursor: not-allowed;
+}
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(20, 29, 57, 0.58);
+  backdrop-filter: blur(12px);
+}
+
+.confirm-dialog {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 18px;
+  width: min(480px, 100%);
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(235, 246, 255, 0.97);
+  color: #22314d;
+  box-shadow: 0 28px 80px rgba(16, 25, 55, 0.42);
+}
+
+.confirm-symbol {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #ffe2e9;
+  color: #bd3158;
+  font-size: 25px;
+  font-weight: 900;
+}
+
+.confirm-copy p {
+  margin: 1px 0 6px;
+  color: #bd3158;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.confirm-copy h2 {
+  margin: 0;
+  color: #1e2c46;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.confirm-copy span {
+  display: block;
+  margin-top: 10px;
+  color: #5c6b82;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.confirm-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.confirm-actions button {
+  min-height: 40px;
+  padding: 0 17px;
+  border-radius: 7px;
+  font-weight: 800;
+}
+
+.confirm-cancel {
+  border: 1px solid #b7c5d7;
+  background: #fff;
+  color: #42526b;
+}
+
+.confirm-submit {
+  border: 1px solid #c7355e;
+  background: #c7355e;
+  color: #fff;
+}
+
+.confirm-submit:hover {
+  background: #a9274c;
 }
 
 .report-panel {
