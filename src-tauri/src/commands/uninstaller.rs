@@ -1,18 +1,23 @@
 /// 软件卸载 — Tauri Commands
 
-use super::trash_support::move_to_trash;
+use super::trash_support::{move_application_to_trash, move_to_trash};
 use crate::models::{CleanError, CleanReport, FileInfo, InstalledApp};
 use plist::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use walkdir::WalkDir;
 
 const MAX_RELATED_PREVIEW_FILES: usize = 24;
 
 #[tauri::command]
 pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
+    tokio::task::spawn_blocking(list_installed_apps_blocking)
+        .await
+        .map_err(|error| format!("Application scan task failed: {error}"))?
+}
+
+fn list_installed_apps_blocking() -> Result<Vec<InstalledApp>, String> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
@@ -54,6 +59,15 @@ pub async fn inspect_installed_app(
     bundle_id: String,
     app_path: Option<String>,
 ) -> Result<InstalledApp, String> {
+    tokio::task::spawn_blocking(move || inspect_installed_app_blocking(bundle_id, app_path))
+        .await
+        .map_err(|error| format!("Application inspection task failed: {error}"))?
+}
+
+fn inspect_installed_app_blocking(
+    bundle_id: String,
+    app_path: Option<String>,
+) -> Result<InstalledApp, String> {
     if let Some(app_path) = app_path {
         let path = expand_home(&app_path);
         if let Some(app) = read_app_bundle(&path, true) {
@@ -69,6 +83,15 @@ pub async fn inspect_installed_app(
 
 #[tauri::command]
 pub async fn uninstall_app(
+    bundle_id: String,
+    app_path: Option<String>,
+) -> Result<CleanReport, String> {
+    tokio::task::spawn_blocking(move || uninstall_app_blocking(bundle_id, app_path))
+        .await
+        .map_err(|error| format!("Application uninstall task failed: {error}"))?
+}
+
+fn uninstall_app_blocking(
     bundle_id: String,
     app_path: Option<String>,
 ) -> Result<CleanReport, String> {
@@ -88,7 +111,7 @@ pub async fn uninstall_app(
     let mut skipped_count = 0_u64;
     let mut errors = Vec::new();
 
-    for target in targets {
+    for (index, target) in targets.into_iter().enumerate() {
         let path = expand_home(&target);
         if !is_safe_uninstall_target(&path) {
             skipped_count += 1;
@@ -96,12 +119,21 @@ pub async fn uninstall_app(
                 path: target,
                 reason: "Path is outside uninstall safety boundaries".to_string(),
             });
+            if index == 0 {
+                break;
+            }
             continue;
         }
 
         let size = path_size(&path);
         let count = path_count_for_report(&path);
-        let result = move_to_trash(&path);
+        let result = if path.extension().and_then(|value| value.to_str()) == Some("app")
+            && path.parent() == Some(Path::new("/Applications"))
+        {
+            move_application_to_trash(&path)
+        } else {
+            move_to_trash(&path)
+        };
 
         match result {
             Ok(()) => {
@@ -111,6 +143,9 @@ pub async fn uninstall_app(
             Err(reason) => {
                 skipped_count += 1;
                 errors.push(CleanError { path: target, reason });
+                if index == 0 {
+                    break;
+                }
             }
         }
     }
@@ -460,30 +495,27 @@ fn path_size(path: &Path) -> u64 {
         return 0;
     }
 
-    WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
-        .sum()
+    du_size(path).unwrap_or(0)
+}
+
+fn du_size(path: &Path) -> Option<u64> {
+    Command::new("/usr/bin/du")
+        .args(["-sk"])
+        .arg(path)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            String::from_utf8(output.stdout)
+                .ok()
+                .and_then(|stdout| stdout.split_whitespace().next().map(str::to_string))
+        })
+        .and_then(|kilobytes| kilobytes.parse::<u64>().ok())
+        .map(|kilobytes| kilobytes.saturating_mul(1024))
 }
 
 fn path_count_for_report(path: &Path) -> u64 {
-    if path.is_file() {
-        return 1;
-    }
-    if !path.is_dir() {
-        return 0;
-    }
-    WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .count() as u64
+    u64::from(path.exists())
 }
 
 fn expand_home(path: &str) -> PathBuf {

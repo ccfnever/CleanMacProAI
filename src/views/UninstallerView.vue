@@ -50,6 +50,7 @@ const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
 const dataSource = ref<"native" | "unavailable">("unavailable");
 let isUnmounted = false;
+const inspectionPromises = new Map<string, Promise<InstalledApp | null>>();
 
 const filteredApps = computed(() => {
   const keyword = query.value.trim().toLowerCase();
@@ -324,6 +325,22 @@ async function scanAppsInDisplayOrder(appList: InstalledApp[]) {
 async function inspectApp(bundleId: string) {
   if (!bundleId) return null;
 
+  const pending = inspectionPromises.get(bundleId);
+  if (pending) return pending;
+
+  const request = inspectAppOnce(bundleId);
+  inspectionPromises.set(bundleId, request);
+  try {
+    return await request;
+  } finally {
+    if (inspectionPromises.get(bundleId) === request) {
+      inspectionPromises.delete(bundleId);
+    }
+  }
+}
+
+async function inspectAppOnce(bundleId: string) {
+
   const current = apps.value.find((app) => app.bundle_id === bundleId);
   if (!current || current.related_files.length > 0 || current.app_size > 0) return current ?? null;
 
@@ -335,7 +352,6 @@ async function inspectApp(bundleId: string) {
       bundleId,
       appPath: current.app_path,
     },
-    60000,
   );
 
   if (result.source === "error") {
