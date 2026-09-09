@@ -6,7 +6,7 @@ import {
 
 export default defineConfigWithVueTs(
   {
-    ignores: ["node_modules/**", "dist/**", "src-tauri/target/**"],
+    ignores: ["node_modules/**", "dist/**", "design/**", "src-tauri/target/**"],
   },
   pluginVue.configs["flat/recommended"],
   vueTsConfigs.recommended,

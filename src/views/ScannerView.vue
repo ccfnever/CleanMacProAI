@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { formatBytes, type CategoryResult, type FileInfo } from "../lib/demoData";
 import { scanPhases, useScannerStore } from "../stores/scanner";
+import AppIcon from "../components/AppIcon.vue";
 
 const scannerStore = useScannerStore();
 const {
@@ -39,8 +40,8 @@ const {
   toggleCategory,
   toggleExpanded,
 } = scannerStore;
-const detailModalCategoryId = ref<string | null>(null);
 const openingPath = ref<string | null>(null);
+const showAllCategoryIds = ref<Set<string>>(new Set());
 
 const scanHeadline = computed(() =>
   scanResults.value.length
@@ -62,14 +63,6 @@ const selectedSummary = computed(() =>
     : "还没有选择要清理的项目",
 );
 
-const detailModalCategory = computed(() =>
-  scanResults.value.find((item) => item.id === detailModalCategoryId.value) ?? null,
-);
-
-const detailModalItems = computed(() =>
-  detailModalCategory.value ? detailItems(detailModalCategory.value) : [],
-);
-
 function riskLabel(risk: string) {
   if (risk === "low") return "可放心清理";
   if (risk === "medium") return "建议确认";
@@ -81,7 +74,8 @@ function detailItems(item: CategoryResult): FileInfo[] {
 }
 
 function previewDetailItems(item: CategoryResult): FileInfo[] {
-  return detailItems(item).slice(0, 20);
+  const files = detailItems(item);
+  return showAllCategoryIds.value.has(item.id) ? files : files.slice(0, 12);
 }
 
 function detailKind(item: FileInfo) {
@@ -92,12 +86,11 @@ function detailGlyph(item: FileInfo) {
   return item.is_dir ? "▣" : "•";
 }
 
-function openDetailModal(categoryId: string) {
-  detailModalCategoryId.value = categoryId;
-}
-
-function closeDetailModal() {
-  detailModalCategoryId.value = null;
+function toggleShowAll(categoryId: string) {
+  const next = new Set(showAllCategoryIds.value);
+  if (next.has(categoryId)) next.delete(categoryId);
+  else next.add(categoryId);
+  showAllCategoryIds.value = next;
 }
 
 async function openFolder(path: string) {
@@ -117,12 +110,12 @@ async function openFolder(path: string) {
   <section class="scanner-page">
     <div class="scan-command">
       <div class="scan-copy">
-        <p class="section-kicker">Smart Scan</p>
+        <p class="section-kicker">安心清理</p>
         <h1>{{ scanHeadline }}</h1>
         <p>{{ scanSubcopy }}</p>
       </div>
       <button type="button" class="primary-action" :disabled="isScanning" @click="startScan">
-        <span>{{ isScanning ? "◌" : "⌕" }}</span>
+        <AppIcon :name="isScanning ? 'refresh' : 'scan'" :size="17" />
         {{ isScanning ? "正在扫描" : scanResults.length ? "重新扫描" : "开始扫描" }}
       </button>
     </div>
@@ -210,31 +203,33 @@ async function openFolder(path: string) {
           :key="item.id"
           :class="['category-card', item.risk, { selected: selectedCategories.has(item.id) }]"
         >
-          <button
-            type="button"
-            class="category-main"
-            :disabled="isCleaning"
-            @click="toggleCategory(item.id, item.risk)"
-          >
-            <span class="checkmark">
+          <div class="category-main">
+            <button
+              type="button"
+              class="checkmark"
+              :disabled="isCleaning || item.risk === 'high'"
+              :aria-label="`${selectedCategories.has(item.id) ? '取消选择' : '选择'}${item.name}`"
+              @click="toggleCategory(item.id, item.risk)"
+            >
               <span v-if="selectedCategories.has(item.id)">✓</span>
               <span v-else-if="item.risk === 'high'">!</span>
-            </span>
-            <span class="category-copy">
-              <strong>{{ item.name }}</strong>
-              <small>{{ item.description }}</small>
-            </span>
+            </button>
+            <button type="button" class="category-copy" @click="toggleExpanded(item.id)">
+              <strong>{{ item.name }}</strong><small>{{ item.description }}</small>
+            </button>
             <span class="category-meta">
               <b>{{ formatBytes(item.total_size) }}</b>
               <small>{{ item.file_count.toLocaleString() }} 个文件</small>
             </span>
             <span class="risk-pill">{{ riskLabel(item.risk) }}</span>
-          </button>
+            <button type="button" class="row-expand" :aria-label="`${expandedCategory === item.id ? '收起' : '展开'}${item.name}`" @click="toggleExpanded(item.id)">
+              <AppIcon name="chevron" :size="16" />
+            </button>
+          </div>
 
           <div class="preview-head">
             <button type="button" @click="toggleExpanded(item.id)">
-              <span>{{ expandedCategory === item.id ? "⌃" : "⌄" }}</span>
-              展开详情
+              {{ expandedCategory === item.id ? "收起详情" : "查看包含内容" }}
             </button>
             <small v-if="item.files.length">{{ item.files.length.toLocaleString() }} 个一级项目</small>
           </div>
@@ -262,12 +257,12 @@ async function openFolder(path: string) {
             </div>
             <div v-else class="detail-empty">这个分类没有可展开的一级项目。</div>
             <button
-              v-if="item.files.length > 20"
+              v-if="item.files.length > 12"
               type="button"
               class="show-all-button"
-              @click="openDetailModal(item.id)"
+              @click="toggleShowAll(item.id)"
             >
-              查看全部 {{ item.files.length.toLocaleString() }} 项
+              {{ showAllCategoryIds.has(item.id) ? "收起更多" : `在表格内展开全部 ${item.files.length.toLocaleString()} 项` }}
             </button>
           </div>
         </article>
@@ -280,44 +275,6 @@ async function openFolder(path: string) {
       <p>开始后会自动归类可清理空间，并把风险最低的项目先选好。</p>
     </div>
 
-    <div
-      v-if="detailModalCategory"
-      class="detail-modal-backdrop"
-      role="presentation"
-      @click.self="closeDetailModal"
-    >
-      <section class="detail-modal" role="dialog" aria-modal="true" :aria-label="`${detailModalCategory.name}详情`">
-        <header>
-          <div>
-            <p class="section-kicker">Category Detail</p>
-            <h3>{{ detailModalCategory.name }}</h3>
-            <span>{{ detailModalItems.length.toLocaleString() }} 个一级项目 · 按大小降序</span>
-          </div>
-          <button type="button" aria-label="关闭详情" @click="closeDetailModal">×</button>
-        </header>
-
-        <div class="modal-detail-list">
-          <div v-for="file in detailModalItems" :key="file.path" class="detail-row">
-            <span class="detail-kind">{{ detailGlyph(file) }}</span>
-            <span class="detail-path">
-              <strong>{{ file.path }}</strong>
-              <small>{{ detailKind(file) }}</small>
-            </span>
-            <button
-              type="button"
-              class="open-folder-button"
-              :disabled="dataSource === 'demo' || openingPath === file.path"
-              :title="dataSource === 'demo' ? '请在 macOS App 中打开文件夹' : undefined"
-              :aria-label="'在 Finder 中打开 ' + file.path"
-              @click.stop="openFolder(file.path)"
-            >
-              {{ openingPath === file.path ? "打开中" : "打开文件夹" }}
-            </button>
-            <b>{{ formatBytes(file.size) }}</b>
-          </div>
-        </div>
-      </section>
-    </div>
   </section>
 </template>
 
@@ -965,5 +922,84 @@ h1 {
   .summary-panel {
     position: static;
   }
+}
+</style>
+
+<style scoped>
+/* v4 visual layer: the scan engine and selection rules above remain unchanged. */
+.scanner-page { max-width: 1240px; margin: 20px auto 0; color: var(--text); }
+.scan-command,
+.progress-panel,
+.summary-panel,
+.category-card,
+.empty-state,
+.report-panel {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: none;
+}
+.scan-command { padding: 26px 28px; border-radius: 18px; }
+.section-kicker { color: var(--accent); }
+h1 { color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 33px; font-weight: 600; }
+.scan-command p:not(.section-kicker), .empty-state p, .report-panel p { color: var(--text-soft); }
+.primary-action, .summary-panel button { color: #fff; background: var(--accent); box-shadow: none; }
+.primary-action:hover, .summary-panel button:hover { background: var(--accent-strong); box-shadow: none; }
+.progress-panel { padding: 14px 16px; }
+.progress-copy { color: var(--text); }
+.progress-track { background: var(--surface-strong); }
+.progress-track div { background: var(--accent); }
+.phase-row { color: var(--text-faint); }
+.notice { border-color: color-mix(in srgb, var(--warning) 25%, transparent); color: var(--text); background: color-mix(in srgb, var(--warning) 10%, var(--surface)); }
+.cleaning-progress { border-color: color-mix(in srgb, var(--success) 30%, transparent); color: var(--text); background: color-mix(in srgb, var(--success) 9%, var(--surface)); }
+.cleaning-progress > span { color: var(--text-soft); }
+.cleaning-progress-track { background: var(--surface-strong); }
+.cleaning-progress-track span { background: var(--success); }
+.result-layout { grid-template-columns: 250px minmax(0, 1fr); gap: 12px; }
+.summary-panel { top: 92px; padding: 18px; border-radius: 16px; }
+.summary-label, .summary-panel > span, .summary-note { color: var(--text-soft); }
+.summary-panel strong { color: var(--text); }
+.select-all-control { color: var(--text-soft); }
+.select-all-control input { accent-color: var(--accent); }
+.summary-panel .invert-selection-button { border-color: var(--border); color: var(--text-soft); background: var(--surface-soft); }
+.risk-summary small { color: var(--text-soft); background: var(--surface-soft); }
+.risk-summary b { color: var(--text); }
+.category-list { gap: 8px; }
+.category-card { border-radius: 14px; }
+.category-card.selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface)); }
+.category-main { grid-template-columns: 28px minmax(0, 1fr) 100px 80px 28px; padding: 14px 15px 8px; }
+.checkmark { padding: 0; border-color: var(--border-strong); color: #fff; background: transparent; }
+.selected .checkmark { border-color: var(--accent); background: var(--accent); }
+.high .checkmark { color: var(--text-faint); background: var(--surface-strong); }
+.category-copy { padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
+.category-copy strong, .category-meta b { color: var(--text); }
+.category-copy small, .category-meta small { color: var(--text-faint); }
+.risk-pill { color: var(--success); background: color-mix(in srgb, var(--success) 11%, transparent); }
+.medium .risk-pill { color: var(--warning); background: color-mix(in srgb, var(--warning) 11%, transparent); }
+.high .risk-pill { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.row-expand { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; color: var(--text-faint); background: transparent; transform: rotate(90deg); transition: transform 150ms ease, background 150ms ease; }
+.category-card:has(.detail-preview) .row-expand { transform: rotate(180deg); }
+.row-expand:hover { background: var(--surface-soft); }
+.preview-head { padding: 0 15px 11px 55px; }
+.preview-head button { color: var(--accent); }
+.preview-head small { color: var(--text-faint); }
+.detail-preview { padding: 0 15px 14px 55px; }
+.detail-list { gap: 5px; }
+.detail-row { border: 1px solid var(--border); color: var(--text-soft); background: var(--surface-soft); }
+.detail-kind { color: var(--accent); }
+.detail-path strong, .detail-row b { color: var(--text); }
+.detail-path small { color: var(--text-faint); }
+.open-folder-button { color: var(--accent); }
+.open-folder-button:hover:not(:disabled), .open-folder-button:focus-visible { color: var(--accent-strong); }
+.detail-empty { color: var(--text-soft); background: var(--surface-soft); }
+.show-all-button { border-color: var(--border); color: var(--accent); background: var(--surface-soft); }
+.empty-state > span { color: var(--accent); }
+.empty-state h3, .report-panel strong { color: var(--text); }
+.report-panel > span { color: var(--success); }
+
+@media (max-width: 1100px) {
+  .result-layout { grid-template-columns: 220px minmax(0, 1fr); }
+  .category-main { grid-template-columns: 28px minmax(0, 1fr) 88px 28px; }
+  .risk-pill { display: none; }
 }
 </style>

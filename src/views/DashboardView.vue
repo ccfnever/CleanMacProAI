@@ -1,477 +1,148 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { storeToRefs } from "pinia";
-import { formatBytes, type DiskInfo, type RiskLevel } from "../lib/demoData";
+import AppIcon from "../components/AppIcon.vue";
+import foxImage from "../assets/themes/fox.png";
+import forestImage from "../assets/themes/forest.png";
+import { formatBytes, type DiskInfo } from "../lib/demoData";
 import { useScannerStore } from "../stores/scanner";
+import { useThemeStore } from "../stores/theme";
 
-const props = defineProps<{
-  diskInfo: DiskInfo;
-  dataSource: "native" | "demo";
-}>();
-
-const emit = defineEmits<{
-  navigate: [view: string];
-}>();
+const props = defineProps<{ diskInfo: DiskInfo; dataSource: "native" | "demo" }>();
+const emit = defineEmits<{ navigate: [view: string] }>();
 
 const scannerStore = useScannerStore();
+const themeStore = useThemeStore();
 const { scanResults, totalCleanable, totalFileCount } = storeToRefs(scannerStore);
+const { currentTheme } = storeToRefs(themeStore);
 
 const hasScanResults = computed(() => scanResults.value.length > 0);
-const availableRatio = computed(() =>
-  props.diskInfo.total_bytes > 0 ? (props.diskInfo.available_bytes / props.diskInfo.total_bytes) * 100 : 0,
-);
+const heroImage = computed(() => currentTheme.value === "pet" ? foxImage : forestImage);
 const diskStatus = computed(() => {
-  if (props.diskInfo.usage_percent >= 90) return "空间紧张";
-  if (props.diskInfo.usage_percent >= 80) return "建议清理";
-  return "状态良好";
+  if (props.diskInfo.usage_percent >= 90) return "空间有点拥挤";
+  if (props.diskInfo.usage_percent >= 80) return "可以整理一下";
+  return "今天状态不错";
 });
-const engineStatus = computed(() =>
-  props.dataSource === "native" ? "已连接本机磁盘" : "等待本机运行环境",
-);
-
-const quickWins = computed(() => [
-  {
-    label: "可用空间",
-    value: formatBytes(props.diskInfo.available_bytes),
-    hint: `${availableRatio.value.toFixed(0)}% 仍可使用`,
-    icon: "⌁",
-  },
-  {
-    label: "可清理项",
-    value: hasScanResults.value ? formatBytes(totalCleanable.value) : "待扫描",
-    hint: hasScanResults.value
-      ? `${scanResults.value.length} 类 · ${totalFileCount.value.toLocaleString()} 个文件`
-      : "扫描后显示真实结果",
-    icon: "◇",
-  },
-  {
-    label: "清理方式",
-    value: "安全模式",
-    hint: "选中项先移入废纸篓",
-    icon: "✓",
-  },
-]);
-
-const diskOffset = computed(() => 314 - (314 * props.diskInfo.usage_percent) / 100);
-const riskRows = computed(() =>
-  [...scanResults.value]
-    .sort((left, right) => right.total_size - left.total_size)
-    .slice(0, 4)
-    .map((item) => ({
-      name: item.name,
-      size: formatBytes(item.total_size),
-      level: riskLabel(item.risk),
-      color: riskColor(item.risk),
-    })),
-);
-
-function riskLabel(risk: RiskLevel) {
-  if (risk === "low") return "可放心清理";
-  if (risk === "medium") return "建议确认";
-  return "已锁定";
-}
-
-function riskColor(risk: RiskLevel) {
-  if (risk === "low") return "#35c8c0";
-  if (risk === "medium") return "#e2aa48";
-  return "#e46f82";
-}
+const themeGreeting = computed(() => ({
+  pet: "小狐狸会陪你看清每一项，再决定是否清理。",
+  nature: "像整理林间小径一样，让空间恢复呼吸。",
+  classic: "用克制、清楚的方式管理你的 Mac 空间。",
+})[currentTheme.value]);
 </script>
 
 <template>
   <section class="dashboard-page">
-    <div class="hero-panel">
+    <section class="hero-panel" :style="{ '--hero-image': `url(${heroImage})` }">
       <div class="hero-copy">
-        <p class="section-kicker">Mac Storage Control</p>
-        <h1>{{ diskStatus }}，来一次深度清理吧。</h1>
-        <p>
-          CleanMacProAI 只基于本机扫描结果给出建议。低风险缓存可直接处理，
-          需要判断的项目会保留给你确认，高风险内容默认锁定。
-        </p>
-
+        <span class="hero-tag"><AppIcon name="shield" :size="14" /> 本地扫描 · 默认保守</span>
+        <h1>{{ diskStatus }}，<br>一起把 Mac 收拾舒服。</h1>
+        <p>{{ themeGreeting }}</p>
         <div class="hero-actions">
           <button type="button" class="primary-action" @click="emit('navigate', 'scanner')">
-            <span>▶</span>
-            {{ hasScanResults ? "查看扫描结果" : "开始智能扫描" }}
+            <AppIcon :name="hasScanResults ? 'check' : 'scan'" :size="17" />
+            {{ hasScanResults ? "查看扫描结果" : "开始安心扫描" }}
           </button>
           <button type="button" class="secondary-action" @click="emit('navigate', 'uninstaller')">
-            <span>□</span>
-            管理应用残留
+            <AppIcon name="apps" :size="16" /> 管理应用
           </button>
         </div>
       </div>
-
-      <div class="disk-orbit" aria-label="磁盘使用率">
-        <svg viewBox="0 0 120 120">
-          <circle cx="60" cy="60" r="50" class="track" />
-          <circle
-            cx="60"
-            cy="60"
-            r="50"
-            class="progress"
-            :stroke-dashoffset="diskOffset"
-          />
-        </svg>
-        <div class="disk-center">
-          <strong>{{ diskInfo.usage_percent.toFixed(0) }}%</strong>
-          <span>已使用</span>
-        </div>
-        <small>{{ engineStatus }}</small>
+      <div class="hero-caption">
+        <span>{{ themeStore.currentThemeLabel }}</span>
+        <small>主题会同步改变整套界面的色彩与氛围</small>
       </div>
-    </div>
+    </section>
 
-    <div class="metric-grid">
-      <article v-for="item in quickWins" :key="item.label" class="metric-card">
-        <span>{{ item.icon }}</span>
-        <p>{{ item.label }}</p>
-        <strong>{{ item.value }}</strong>
-        <small>{{ item.hint }}</small>
+    <section class="intro-panel">
+      <div class="intro-copy">
+        <p class="section-kicker">为什么是 CleanMacProAI</p>
+        <h2>先说明白，再帮你动手。</h2>
+        <p>
+          它会把缓存、日志、安装残留和应用关联文件分开说明，显示来源、大小和风险。
+          低风险项目可以快速处理，需要判断的内容会保留，高风险数据默认不选。
+        </p>
+      </div>
+      <div class="scan-status">
+        <span class="status-icon"><AppIcon :name="hasScanResults ? 'check' : 'scan'" :size="19" /></span>
+        <div>
+          <strong>{{ hasScanResults ? `发现 ${formatBytes(totalCleanable)}` : "还没有扫描记录" }}</strong>
+          <small>{{ hasScanResults ? `${scanResults.length} 类 · ${totalFileCount.toLocaleString()} 个文件，点开可逐项查看` : "一次扫描只做分析，不会自动删除任何内容" }}</small>
+        </div>
+        <button type="button" @click="emit('navigate', 'scanner')">{{ hasScanResults ? "继续查看" : "去扫描" }} <span>→</span></button>
+      </div>
+    </section>
+
+    <section class="principles" aria-label="产品原则">
+      <article>
+        <span><AppIcon name="shield" :size="19" /></span>
+        <div><strong>安全有边界</strong><p>个人文档、钥匙串和偏好设置默认不进入自动选择。</p></div>
       </article>
-    </div>
-
-    <div class="two-column">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <p class="section-kicker">扫描预案</p>
-            <h3>{{ hasScanResults ? "本次扫描发现" : "等待智能扫描" }}</h3>
-          </div>
-          <button type="button" @click="emit('navigate', 'scanner')">
-            {{ hasScanResults ? "查看" : "扫描" }}
-          </button>
-        </div>
-        <div v-if="riskRows.length" class="risk-list">
-          <div v-for="row in riskRows" :key="row.name" class="risk-row">
-            <span :style="{ background: row.color }"></span>
-            <div>
-              <strong>{{ row.name }}</strong>
-              <small>{{ row.level }}</small>
-            </div>
-            <b>{{ row.size }}</b>
-          </div>
-        </div>
-        <div v-else class="scan-empty">
-          <strong>暂无扫描结果</strong>
-          <p>完成一次智能扫描后，这里会显示真实的分类、大小和风险等级。</p>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <p class="section-kicker">容量</p>
-            <h3>{{ diskInfo.volume_name }}</h3>
-          </div>
-        </div>
-        <dl class="capacity-list">
-          <div>
-            <dt>总容量</dt>
-            <dd>{{ formatBytes(diskInfo.total_bytes) }}</dd>
-          </div>
-          <div>
-            <dt>已使用</dt>
-            <dd>{{ formatBytes(diskInfo.used_bytes) }}</dd>
-          </div>
-          <div>
-            <dt>可用空间</dt>
-            <dd>{{ formatBytes(diskInfo.available_bytes) }}</dd>
-          </div>
-        </dl>
-      </section>
-    </div>
+      <article>
+        <span><AppIcon name="folder" :size="19" /></span>
+        <div><strong>详情在原位展开</strong><p>不用在窗口间来回跳，路径、大小和类型都在列表内查看。</p></div>
+      </article>
+      <article>
+        <span><AppIcon name="trash" :size="19" /></span>
+        <div><strong>优先移入废纸篓</strong><p>已支持的清理动作保留恢复余地，也会明确显示执行结果。</p></div>
+      </article>
+    </section>
   </section>
 </template>
 
 <style scoped>
-.dashboard-page {
-  max-width: 1180px;
-  margin: 0 auto;
-}
-
+.dashboard-page { max-width: 1240px; margin: 20px auto 0; }
 .hero-panel {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 28px;
-  min-height: 280px;
-  padding: 34px;
-  border: 1px solid rgba(238, 249, 255, 0.18);
-  border-radius: 24px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.08)),
-    rgba(24, 75, 113, 0.32);
-  box-shadow: 0 24px 80px rgba(22, 41, 88, 0.22);
-  backdrop-filter: blur(18px);
-}
-
-.section-kicker {
-  margin: 0 0 8px;
-  color: rgba(171, 247, 232, 0.92);
-  font-size: 12px;
-  font-weight: 850;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-h1 {
-  max-width: 680px;
-  margin: 0;
-  color: #fff;
-  font-size: 38px;
-  line-height: 1.04;
-  letter-spacing: 0;
-}
-
-.hero-copy > p:not(.section-kicker) {
-  max-width: 660px;
-  margin: 16px 0 0;
-  color: rgba(235, 248, 255, 0.74);
-  font-size: 15px;
-  line-height: 1.8;
-}
-
-.hero-actions {
-  display: flex;
-  gap: 12px;
-  margin-top: 28px;
-}
-
-.primary-action,
-.secondary-action,
-.panel-head button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 18px;
-  border: 0;
-  border-radius: 12px;
-  font-weight: 850;
-}
-
-.primary-action {
-  background: #ffffff;
-  color: #315c7d;
-  box-shadow: 0 16px 34px rgba(20, 48, 91, 0.18);
-}
-
-.primary-action:hover,
-.secondary-action:hover,
-.panel-head button:hover {
-  transform: translateY(-1px);
-}
-
-.primary-action {
-  transition: transform 160ms ease, box-shadow 160ms ease;
-}
-
-.secondary-action,
-.panel-head button {
-  transition: transform 160ms ease, background 160ms ease;
-}
-
-.secondary-action,
-.panel-head button {
-  background: rgba(235, 248, 255, 0.16);
-  color: #fff;
-}
-
-.disk-orbit {
+  --hero-image: none;
   position: relative;
-  display: grid;
-  place-items: center;
-}
-
-.disk-orbit svg {
-  width: 220px;
-  height: 220px;
-  transform: rotate(-90deg);
-}
-
-.track,
-.progress {
-  fill: none;
-  stroke-width: 11;
-}
-
-.track {
-  stroke: rgba(235, 248, 255, 0.22);
-}
-
-.progress {
-  stroke: #56e0d4;
-  stroke-linecap: round;
-  stroke-dasharray: 314;
-  transition: stroke-dashoffset 320ms ease;
-}
-
-.disk-center {
-  position: absolute;
-  display: grid;
-  place-items: center;
-}
-
-.disk-center strong {
-  font-size: 44px;
-  letter-spacing: 0;
-  color: #fff;
-}
-
-.disk-center span {
-  color: rgba(235, 248, 255, 0.7);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.disk-orbit > small {
-  position: absolute;
-  bottom: 20px;
-  color: rgba(235, 248, 255, 0.58);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin-top: 18px;
-}
-
-.metric-card,
-.panel {
-  border: 1px solid rgba(238, 249, 255, 0.16);
-  border-radius: 18px;
-  background: rgba(28, 73, 109, 0.28);
-  box-shadow: 0 18px 52px rgba(22, 41, 88, 0.16);
-  backdrop-filter: blur(16px);
-}
-
-.metric-card {
-  padding: 20px;
-}
-
-.metric-card > span {
-  color: #6ce6dd;
-  font-size: 22px;
-}
-
-.metric-card p {
-  margin: 12px 0 3px;
-  color: rgba(235, 248, 255, 0.66);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.metric-card strong {
-  display: block;
-  font-size: 28px;
-  letter-spacing: 0;
-  color: #fff;
-}
-
-.metric-card small {
-  color: rgba(235, 248, 255, 0.58);
-}
-
-.two-column {
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr;
-  gap: 18px;
-  margin-top: 18px;
-}
-
-.panel {
-  padding: 22px;
-}
-
-.panel-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.panel h3 {
-  margin: 0;
-  font-size: 18px;
+  align-items: stretch;
+  min-height: 390px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--surface) 60%, var(--border));
+  border-radius: 24px;
   color: #fff;
+  background-image: var(--hero-overlay), var(--hero-image);
+  background-position: center, center 48%;
+  background-size: cover;
+  box-shadow: var(--shadow);
 }
+.hero-panel::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; box-shadow: inset 0 1px 0 rgba(255,255,255,.35); }
+:global(:root[data-theme="nature"]) .hero-panel { background-position: center, center 54%; }
+:global(:root[data-theme="classic"]) .hero-panel { background-position: center, center 54%; filter: saturate(.7); }
+.hero-copy { position: relative; z-index: 1; align-self: center; width: min(610px, 62%); padding: 48px 52px; }
+.hero-tag { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 11px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(255,255,255,.12); font-size: 10px; font-weight: 750; backdrop-filter: blur(12px); }
+.hero-copy h1 { margin: 18px 0 0; font-family: ui-serif, "Songti SC", "STSong", serif; font-size: clamp(34px, 3.4vw, 52px); font-weight: 600; line-height: 1.12; letter-spacing: -.035em; text-wrap: balance; }
+.hero-copy > p { max-width: 480px; margin: 16px 0 0; color: rgba(255,255,255,.82); font-size: 14px; line-height: 1.75; }
+.hero-actions { display: flex; gap: 10px; margin-top: 27px; }
+.hero-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 17px; border-radius: 11px; font-size: 12px; font-weight: 800; transition: transform 150ms ease, background 150ms ease; }
+.hero-actions button:hover { transform: translateY(-1px); }
+.primary-action { border: 0; color: var(--accent-strong); background: #fff; box-shadow: 0 10px 28px rgba(0,0,0,.15); }
+.secondary-action { border: 1px solid rgba(255,255,255,.32); color: #fff; background: rgba(255,255,255,.1); backdrop-filter: blur(12px); }
+.secondary-action:hover { background: rgba(255,255,255,.17); }
+.hero-caption { position: absolute; z-index: 1; right: 18px; bottom: 16px; display: grid; max-width: 250px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; color: #fff; background: rgba(28,30,28,.2); text-align: right; backdrop-filter: blur(12px); }
+.hero-caption span { font-size: 11px; font-weight: 800; }
+.hero-caption small { margin-top: 2px; color: rgba(255,255,255,.68); font-size: 9px; }
 
-.risk-list,
-.capacity-list {
-  display: grid;
-  gap: 12px;
-  margin-top: 18px;
-}
+.intro-panel { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 28px; align-items: end; margin-top: 16px; padding: 27px 30px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-soft); }
+.section-kicker { margin: 0 0 7px; color: var(--accent); font-size: 10px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
+.intro-copy h2 { margin: 0; color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
+.intro-copy > p:last-child { max-width: 650px; margin: 10px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.8; }
+.scan-status { display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 11px; padding: 14px; border-radius: 13px; background: var(--surface-soft); }
+.status-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }
+.scan-status strong, .scan-status small { display: block; }
+.scan-status strong { color: var(--text); font-size: 12px; }
+.scan-status small { margin-top: 3px; color: var(--text-faint); font-size: 9px; line-height: 1.4; }
+.scan-status button { padding: 7px 0 7px 10px; border: 0; color: var(--accent); background: transparent; font-size: 10px; font-weight: 800; white-space: nowrap; }
 
-.scan-empty {
-  margin-top: 18px;
-  padding: 18px;
-  border: 1px dashed rgba(238, 249, 255, 0.22);
-  border-radius: 13px;
-  background: rgba(235, 248, 255, 0.08);
-}
+.principles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+.principles article { display: flex; gap: 12px; min-height: 96px; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: color-mix(in srgb, var(--surface) 80%, transparent); }
+.principles article > span { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; color: var(--accent); background: var(--accent-soft); }
+.principles strong { color: var(--text); font-size: 12px; }
+.principles p { margin: 5px 0 0; color: var(--text-soft); font-size: 10px; line-height: 1.55; }
 
-.scan-empty strong {
-  color: #fff;
-  font-size: 14px;
-}
-
-.scan-empty p {
-  margin: 6px 0 0;
-  color: rgba(235, 248, 255, 0.62);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.risk-row {
-  display: grid;
-  grid-template-columns: 10px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 13px;
-  background: rgba(235, 248, 255, 0.1);
-}
-
-.risk-row > span {
-  width: 10px;
-  height: 38px;
-  border-radius: 999px;
-}
-
-.risk-row strong,
-.risk-row b {
-  display: block;
-  font-size: 14px;
-  color: #fff;
-}
-
-.risk-row small {
-  color: rgba(235, 248, 255, 0.6);
-}
-
-.capacity-list {
-  margin-bottom: 0;
-}
-
-.capacity-list div {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid rgba(238, 249, 255, 0.12);
-}
-
-.capacity-list dt {
-  color: rgba(235, 248, 255, 0.62);
-  font-weight: 800;
-}
-
-.capacity-list dd {
-  margin: 0;
-  font-weight: 900;
-  color: #fff;
+@media (max-width: 1120px) {
+  .hero-panel { min-height: 350px; }
+  .hero-copy { width: 68%; padding: 40px; }
+  .intro-panel { grid-template-columns: 1fr; align-items: stretch; }
 }
 </style>

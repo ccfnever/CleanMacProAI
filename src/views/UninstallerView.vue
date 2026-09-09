@@ -7,6 +7,7 @@ import {
   type FileInfo,
   type InstalledApp,
 } from "../lib/demoData";
+import AppIcon from "../components/AppIcon.vue";
 
 type FacetKind = "status" | "source" | "platform" | "vendor";
 type FileGroupId =
@@ -496,20 +497,6 @@ function normalizePath(path: string): string {
 
 <template>
   <section class="uninstaller-page">
-    <header class="uninstaller-top">
-      <button type="button" class="back-button" aria-label="返回">‹</button>
-      <span>简介</span>
-      <strong>卸载器</strong>
-      <label class="search-box">
-        <span>⌕</span>
-        <input v-model="query" type="search" placeholder="搜索" />
-      </label>
-      <button type="button" class="assistant-pill">
-        <span></span>
-        助手
-      </button>
-    </header>
-
     <div class="uninstaller-body">
       <aside class="facet-panel" aria-label="应用归类">
         <div
@@ -534,12 +521,17 @@ function normalizePath(path: string): string {
       <main class="apps-panel">
         <div class="apps-head">
           <div>
-            <h1>所有应用程序</h1>
-            <p>您 Mac 上安装的所有应用程序均显示在下方。</p>
+            <p class="section-kicker">应用与关联文件</p>
+            <h1>卸载之前，先把它留下的东西看清楚。</h1>
+            <p>点开任意一行即可在表格内查看应用本体、缓存、偏好设置与其他关联文件。</p>
           </div>
-          <button type="button" class="select-visible" @click="selectAllVisible">
-            选择当前列表
-          </button>
+          <div class="apps-head-actions">
+            <label class="search-box">
+              <AppIcon name="search" :size="15" />
+              <input v-model="query" type="search" placeholder="搜索名称、Bundle ID 或路径" />
+            </label>
+            <button type="button" class="select-visible" @click="selectAllVisible">选择当前列表</button>
+          </div>
         </div>
 
         <p v-if="notice" class="notice">{{ notice }}</p>
@@ -586,7 +578,10 @@ function normalizePath(path: string): string {
                     {{ appInitial(app) }}
                   </span>
                 </span>
-                <strong>{{ app.name }}</strong>
+                <span class="app-identity">
+                  <strong>{{ app.name }}</strong>
+                  <small>{{ appVendor(app) }} · {{ app.bundle_id }}</small>
+                </span>
               </button>
               <span class="chevron">{{ expandedBundleIds.has(app.bundle_id) ? "⌄" : "›" }}</span>
               <strong class="row-size">{{ appSizeLabel(app) }}</strong>
@@ -597,7 +592,7 @@ function normalizePath(path: string): string {
                 :title="`在 Finder 中打开 ${app.name} 的应用目录`"
                 @click.stop="openAppDirectory(app)"
               >
-                ↗
+                  <AppIcon name="folder" :size="15" />
               </button>
             </div>
 
@@ -608,9 +603,9 @@ function normalizePath(path: string): string {
                   <strong>{{ group.label }}</strong>
                   <span class="group-size">{{ formatBytes(group.size) }}</span>
                 </div>
-                <div v-for="file in group.files" :key="file.path" class="file-row">
+                <div v-for="file in group.files" :key="file.path" class="file-row" :title="file.path">
                   <span class="file-icon">▰</span>
-                  <span>{{ file.path.split('/').pop() || file.path }}</span>
+                  <span>{{ file.path }}</span>
                   <strong>{{ formatBytes(file.size) }}</strong>
                 </div>
               </section>
@@ -624,18 +619,27 @@ function normalizePath(path: string): string {
       </main>
     </div>
 
-    <footer class="bottom-bar">
-      <span>{{ selectedBundleIds.size }} 个应用程序</span>
-      <button
-        type="button"
-        class="uninstall-orb"
-        :title="dataSource !== 'native' ? '请在 macOS 桌面应用中执行卸载' : undefined"
-        :disabled="selectedBundleIds.size === 0 || isUninstalling || dataSource !== 'native'"
-        @click="requestUninstall"
-      >
-        {{ isUninstalling ? "卸载中" : "卸载" }}
-      </button>
-      <span>{{ selectedTotal > 0 ? formatBytes(selectedTotal) : "0 GB" }}</span>
+    <footer :class="['bottom-bar', { confirming: isConfirmingUninstall }]">
+      <template v-if="!isConfirmingUninstall">
+        <div class="selection-summary">
+          <strong>{{ selectedBundleIds.size }} 个应用</strong>
+          <span>{{ selectedTotal > 0 ? `预计释放 ${formatBytes(selectedTotal)}` : "勾选应用后可继续" }}</span>
+        </div>
+        <button type="button" class="uninstall-orb" :title="dataSource !== 'native' ? '请在 macOS 桌面应用中执行卸载' : undefined" :disabled="selectedBundleIds.size === 0 || isUninstalling || dataSource !== 'native'" @click="requestUninstall">
+          <AppIcon name="trash" :size="16" /> {{ isUninstalling ? "卸载中" : "准备卸载" }}
+        </button>
+      </template>
+      <template v-else>
+        <div class="confirm-symbol" aria-hidden="true">!</div>
+        <div class="confirm-copy">
+          <strong>确认将 {{ selectedApps.length }} 个应用及关联文件移入废纸篓？</strong>
+          <span>预计释放 {{ formatBytes(selectedTotal) }}。你仍可从 macOS 废纸篓恢复。</span>
+        </div>
+        <div class="confirm-actions">
+          <button type="button" class="confirm-cancel" @click="isConfirmingUninstall = false">取消</button>
+          <button type="button" class="confirm-submit" @click="uninstallSelected">确认移入废纸篓</button>
+        </div>
+      </template>
     </footer>
 
     <div v-if="uninstallReport" class="report-panel">
@@ -646,33 +650,6 @@ function normalizePath(path: string): string {
       </p>
     </div>
 
-    <Teleport to="body">
-      <div
-        v-if="isConfirmingUninstall"
-        class="confirm-backdrop"
-        role="presentation"
-        @click.self="isConfirmingUninstall = false"
-      >
-        <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="uninstall-title">
-          <div class="confirm-symbol" aria-hidden="true">!</div>
-          <div class="confirm-copy">
-            <p>应用卸载</p>
-            <h2 id="uninstall-title">将 {{ selectedApps.length }} 个应用移入废纸篓？</h2>
-            <span>
-              应用程序及扫描到的关联文件将一并处理，预计释放 {{ formatBytes(selectedTotal) }}。
-            </span>
-          </div>
-          <div class="confirm-actions">
-            <button type="button" class="confirm-cancel" @click="isConfirmingUninstall = false">
-              取消
-            </button>
-            <button type="button" class="confirm-submit" @click="uninstallSelected">
-              移入废纸篓
-            </button>
-          </div>
-        </section>
-      </div>
-    </Teleport>
   </section>
 </template>
 
@@ -1283,5 +1260,113 @@ function normalizePath(path: string): string {
   to {
     transform: rotate(360deg);
   }
+}
+</style>
+
+<style scoped>
+/* v4 table layout: native discovery, inspection and uninstall calls remain unchanged. */
+.uninstaller-page {
+  position: relative;
+  min-height: 0;
+  margin: 20px auto 0;
+  padding: 0 0 78px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  color: var(--text);
+  background: transparent;
+  box-shadow: none;
+  max-width: 1240px;
+}
+.uninstaller-body { grid-template-columns: 180px minmax(0, 1fr); gap: 12px; min-height: 0; padding: 0; }
+.facet-panel { position: sticky; top: 96px; height: fit-content; padding: 14px 10px; border: 1px solid var(--border); border-radius: 15px; color: var(--text-soft); background: color-mix(in srgb, var(--surface) 78%, transparent); box-shadow: var(--shadow-soft); }
+.facet-section { padding: 0; }
+.facet-section + .facet-section { margin-top: 14px; }
+.facet-section p { padding: 0 9px; color: var(--text-faint); font-size: 9px; letter-spacing: .08em; }
+.facet-item { min-height: 31px; padding: 0 9px; border-radius: 8px; color: var(--text-soft); font-size: 10px; }
+.facet-item:hover { background: var(--surface-soft); }
+.facet-item.active { color: var(--accent-strong); background: var(--accent-soft); }
+.facet-item strong { color: inherit; }
+.apps-panel { min-width: 0; padding: 0; }
+.apps-head { align-items: end; padding: 24px 26px; border: 1px solid var(--border); border-radius: 18px 18px 0 0; background: var(--surface); }
+.apps-head .section-kicker { margin: 0 0 7px; color: var(--accent); font-size: 9px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
+.apps-head h1 { max-width: 610px; margin: 0; color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 26px; font-weight: 600; line-height: 1.2; }
+.apps-head p:not(.section-kicker) { max-width: 600px; margin: 8px 0 0; color: var(--text-soft); font-size: 10px; line-height: 1.55; }
+.apps-head-actions { display: flex; align-items: center; gap: 8px; }
+.search-box { display: flex; align-items: center; gap: 7px; width: 238px; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-faint); background: var(--surface-soft); }
+.search-box input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 10px; }
+.search-box input::placeholder { color: var(--text-faint); }
+.select-visible, .list-toolbar button { border-color: var(--border); color: var(--accent); background: var(--surface-soft); }
+.select-visible { height: 34px; padding: 0 11px; border: 1px solid var(--border); border-radius: 10px; font-size: 10px; font-weight: 800; }
+.notice { margin: 0; border: 1px solid color-mix(in srgb, var(--warning) 23%, transparent); border-top: 0; border-radius: 0; color: var(--text); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
+.list-toolbar { margin: 0; padding: 11px 14px; border: 1px solid var(--border); border-top: 0; color: var(--text-soft); background: var(--surface-soft); }
+.list-toolbar button { color: var(--text-soft); background: transparent; }
+.scan-spinner { border-color: color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent); background: none; }
+.loading-state, .empty-row { border: 1px solid var(--border); border-top: 0; color: var(--text-soft); background: var(--surface); }
+.app-tree { max-height: none; overflow: visible; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 18px 18px; background: var(--surface); box-shadow: var(--shadow-soft); }
+.app-node { border-bottom-color: var(--border); }
+.app-node:last-child { border-bottom: 0; }
+.app-node.expanded { background: color-mix(in srgb, var(--accent-soft) 18%, var(--surface)); }
+.app-main { grid-template-columns: 25px minmax(0, 1fr) 18px 88px 34px; min-height: 56px; padding: 6px 13px; color: var(--text); }
+.expand-hit { gap: 10px; color: var(--text); }
+.app-icon-wrap, .app-icon, .app-logo { width: 34px; height: 34px; border-radius: 9px; }
+.app-identity { display: block; min-width: 0; }
+.expand-hit .app-identity strong { display: block; overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.app-identity small { display: block; overflow: hidden; margin-top: 3px; color: var(--text-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.selection-dot { border-color: var(--border-strong); }
+.selection-dot.checked { border-color: var(--accent); color: #fff; background: var(--accent); }
+.chevron, .row-size { color: var(--text-soft); }
+.open-app-button { border-color: var(--border); color: var(--accent); background: var(--surface-soft); }
+.open-app-button:hover { border-color: var(--border-strong); color: var(--accent-strong); background: var(--accent-soft); }
+.file-tree { margin: 0 12px 12px 50px; overflow: hidden; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-soft); }
+.file-group + .file-group { border-top-color: var(--border); }
+.group-row, .file-row { padding-right: 11px; }
+.group-row { color: var(--text); background: color-mix(in srgb, var(--surface-strong) 58%, transparent); }
+.file-row { color: var(--text-soft); }
+.file-row span:nth-child(2) { color: var(--text-soft); }
+.group-icon, .file-icon { color: var(--accent); background: var(--accent-soft); }
+.group-size, .file-row strong { color: var(--text-soft); }
+.bottom-bar {
+  position: sticky;
+  z-index: 15;
+  bottom: 12px;
+  left: auto;
+  display: flex;
+  justify-content: space-between;
+  width: calc(100% - 192px);
+  height: auto;
+  min-height: 62px;
+  margin: 12px 0 0 auto;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 15px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 14px 34px rgba(36, 34, 31, .14);
+  backdrop-filter: blur(18px);
+}
+.selection-summary { display: grid; gap: 3px; }
+.selection-summary strong { font-size: 11px; }
+.selection-summary span { color: var(--text-soft); font-size: 9px; }
+.uninstall-orb { display: flex; align-items: center; justify-content: center; gap: 7px; width: auto; min-width: 116px; height: 40px; margin: 0; padding: 0 14px; border: 0; border-radius: 10px; color: #fff; background: var(--accent); box-shadow: none; font-size: 11px; }
+.uninstall-orb:hover:not(:disabled) { background: var(--accent-strong); }
+.uninstall-orb:disabled { border: 0; color: var(--text-faint); background: var(--surface-strong); box-shadow: none; opacity: .72; }
+.bottom-bar.confirming { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 11px; }
+.confirm-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); font-weight: 900; }
+.confirm-copy { min-width: 0; }
+.confirm-copy strong { display: block; color: var(--text); font-size: 11px; }
+.confirm-copy span { display: block; margin-top: 4px; color: var(--text-soft); font-size: 9px; }
+.confirm-actions { display: flex; align-items: center; gap: 7px; }
+.confirm-actions button { min-height: 34px; padding: 0 12px; border-radius: 9px; font-size: 10px; font-weight: 800; }
+.confirm-cancel { border: 1px solid var(--border); color: var(--text-soft); background: var(--surface-soft); }
+.confirm-submit { border: 0; color: #fff; background: var(--danger); }
+.report-panel { position: static; width: calc(100% - 192px); margin: 10px 0 0 auto; border-color: color-mix(in srgb, var(--success) 22%, var(--border)); color: var(--text); background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
+
+@media (max-width: 1120px) {
+  .uninstaller-body { grid-template-columns: 150px minmax(0, 1fr); }
+  .apps-head { display: grid; gap: 18px; }
+  .apps-head-actions { justify-content: space-between; }
+  .search-box { flex: 1; width: auto; }
+  .bottom-bar, .report-panel { width: calc(100% - 162px); }
 }
 </style>
