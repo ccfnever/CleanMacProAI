@@ -98,6 +98,7 @@ onMounted(async () => {
 :root,
 :root[data-theme="pet"] {
   color-scheme: light;
+  --font-ui: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
   --app-bg: #eee6dc;
   --sidebar-bg: #e7ddd1;
   --surface: #fffdf9;
@@ -170,7 +171,7 @@ body {
   overflow: hidden;
   color: var(--text);
   background: var(--app-bg);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font: 14px/1.5 var(--font-ui);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

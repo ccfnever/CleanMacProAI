@@ -2,9 +2,11 @@
 import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import AppIcon from "../components/AppIcon.vue";
 import { formatBytes, type CategoryResult, type FileInfo } from "../lib/demoData";
 import { scanPhases, useScannerStore } from "../stores/scanner";
-import AppIcon from "../components/AppIcon.vue";
+
+type RiskFilter = "all" | "low" | "medium" | "high";
 
 const scannerStore = useScannerStore();
 const {
@@ -40,22 +42,28 @@ const {
   toggleCategory,
   toggleExpanded,
 } = scannerStore;
+
+const activeFilter = ref<RiskFilter>("all");
+const query = ref("");
 const openingPath = ref<string | null>(null);
 const showAllCategoryIds = ref<Set<string>>(new Set());
 
-const scanHeadline = computed(() =>
-  scanResults.value.length
-    ? formatBytes(totalCleanable.value)
-    : cleanReport.value ? "本次清理已完成" : "先做一次快速体检",
-);
+const filterOptions = computed(() => [
+  { id: "all" as const, label: "全部", count: scanResults.value.length },
+  { id: "low" as const, label: "可放心清理", count: safeCount.value },
+  { id: "medium" as const, label: "建议确认", count: mediumCount.value },
+  { id: "high" as const, label: "已锁定", count: highCount.value },
+]);
 
-const scanSubcopy = computed(() =>
-  scanResults.value.length
-    ? `已识别 ${scanResults.value.length} 类可处理项目，共 ${totalFileCount.value.toLocaleString()} 个文件。低风险项目已自动勾选，其他项目交给你确认。`
-    : cleanReport.value
-      ? "当前扫描结果已在本地同步更新，可以重新扫描确认剩余空间。"
-      : "扫描缓存、日志、构建文件和安装残留；先给出风险判断，再决定清理什么。",
-);
+const filteredResults = computed(() => {
+  const keyword = query.value.trim().toLowerCase();
+  return scanResults.value.filter((item) => {
+    if (activeFilter.value !== "all" && item.risk !== activeFilter.value) return false;
+    if (!keyword) return true;
+    return [item.name, item.description, ...item.files.map((file) => file.path)]
+      .some((value) => value.toLowerCase().includes(keyword));
+  });
+});
 
 const selectedSummary = computed(() =>
   selectedItems.value.length
@@ -69,21 +77,30 @@ function riskLabel(risk: string) {
   return "已锁定";
 }
 
+function categoryTone(item: CategoryResult) {
+  if (item.risk === "medium") return "tone-sand";
+  if (item.risk === "high") return "tone-rose";
+  return item.id.includes("browser") ? "tone-blue" : "tone-map";
+}
+
+function categoryIcon(item: CategoryResult) {
+  if (item.risk === "high") return "shield";
+  if (item.id.includes("browser")) return "search";
+  if (item.id.includes("xcode")) return "apps";
+  return "folder";
+}
+
 function detailItems(item: CategoryResult): FileInfo[] {
   return [...item.files].sort((left, right) => right.size - left.size);
 }
 
-function previewDetailItems(item: CategoryResult): FileInfo[] {
+function visibleDetailItems(item: CategoryResult): FileInfo[] {
   const files = detailItems(item);
   return showAllCategoryIds.value.has(item.id) ? files : files.slice(0, 12);
 }
 
 function detailKind(item: FileInfo) {
   return item.is_dir ? "文件夹" : "文件";
-}
-
-function detailGlyph(item: FileInfo) {
-  return item.is_dir ? "▣" : "•";
 }
 
 function toggleShowAll(categoryId: string) {
@@ -108,898 +125,453 @@ async function openFolder(path: string) {
 
 <template>
   <section class="scanner-page">
-    <div class="scan-command">
-      <div class="scan-copy">
-        <p class="section-kicker">安心清理</p>
-        <h1>{{ scanHeadline }}</h1>
-        <p>{{ scanSubcopy }}</p>
+    <section v-if="isScanning" class="scan-stage" aria-live="polite">
+      <div class="scan-emblem">
+        <AppIcon name="scan" :size="34" />
+        <span class="spinner"></span>
       </div>
-      <button type="button" class="primary-action" :disabled="isScanning" @click="startScan">
-        <AppIcon :name="isScanning ? 'refresh' : 'scan'" :size="17" />
-        {{ isScanning ? "正在扫描" : scanResults.length ? "重新扫描" : "开始扫描" }}
-      </button>
-    </div>
-
-    <div class="progress-panel">
-      <div class="progress-copy">
-        <strong>{{ activePhase }}</strong>
-        <span>{{ scanProgress.toFixed(0) }}%</span>
-      </div>
-      <div class="progress-track">
-        <div :style="{ width: `${scanProgress}%` }"></div>
-      </div>
-      <div class="phase-row">
-        <span v-for="phase in scanPhases" :key="phase">{{ phase }}</span>
-      </div>
-    </div>
-
-    <p v-if="notice" class="notice">{{ notice }}</p>
-
-    <div v-if="isCleaning" class="cleaning-progress" role="status" aria-live="polite">
-      <strong>{{ cleanPhase }}</strong>
-      <span>{{ cleanProgress }}%</span>
+      <h1>{{ activePhase }}</h1>
       <div
-        class="cleaning-progress-track"
+        class="scan-meter"
         role="progressbar"
-        aria-label="清理进度"
-        :aria-valuenow="cleanProgress"
+        aria-label="扫描进度"
+        :aria-valuenow="scanProgress"
         aria-valuemin="0"
         aria-valuemax="100"
       >
-        <span :style="{ width: `${cleanProgress}%` }"></span>
+        <span :style="{ width: `${scanProgress}%` }"></span>
       </div>
-    </div>
+      <p>{{ scanProgress.toFixed(0) }}% · 扫描只分析文件，不会自动清理</p>
+      <div class="phase-row">
+        <span v-for="phase in scanPhases" :key="phase">{{ phase }}</span>
+      </div>
+    </section>
 
-    <div v-if="cleanReport" class="report-panel report-top">
-      <span>✓</span><div><strong>{{ cleanReport.errors.length ? "清理部分完成" : "清理完成" }}</strong>
-      <p>释放 {{ formatBytes(cleanReport.freed_bytes) }}，处理 {{ cleanReport.cleaned_count.toLocaleString() }} 个文件，跳过 {{ cleanReport.skipped_count }} 个。项目已移入废纸篓，可在 macOS 废纸篓中自行恢复。</p></div>
-    </div>
+    <template v-else-if="scanResults.length">
+      <header class="content-heading">
+        <div>
+          <p class="section-kicker">扫描结果</p>
+          <h1>这些项目正在占用空间</h1>
+          <p>逐项查看来源和风险，再决定要清理什么。</p>
+        </div>
+        <button type="button" class="secondary-action" @click="startScan">
+          <AppIcon name="refresh" :size="15" />
+          重新扫描
+        </button>
+      </header>
 
-    <div v-if="scanResults.length" class="result-layout">
-      <aside class="summary-panel">
-        <p class="summary-label">建议本次释放</p>
-        <strong>{{ formatBytes(selectedTotal) }}</strong>
-        <span>{{ selectedSummary }}</span>
-        <div class="selection-actions">
-          <label class="select-all-control">
-            <input
-              type="checkbox"
-              :checked="isAllSelectableSelected"
-              :indeterminate="isSelectionPartial"
-              :disabled="isCleaning"
-              @change="toggleAllCategories"
-            >
-            <span>{{ isAllSelectableSelected ? "取消全选" : "全选可清理项" }}</span>
-          </label>
+      <div v-if="cleanReport" class="report-panel">
+        <span class="report-icon"><AppIcon name="check" :size="18" /></span>
+        <div>
+          <strong>{{ cleanReport.errors.length ? "清理部分完成" : "清理完成" }}</strong>
+          <p>
+            释放 {{ formatBytes(cleanReport.freed_bytes) }}，处理
+            {{ cleanReport.cleaned_count.toLocaleString() }} 个文件，跳过 {{ cleanReport.skipped_count }} 个。
+            项目已移入废纸篓。
+          </p>
+        </div>
+      </div>
+
+      <p v-if="notice" class="notice" role="status">{{ notice }}</p>
+
+      <section class="scan-summary">
+        <div class="summary-copy">
+          <span class="icon-tile tone-map"><AppIcon name="check" :size="21" /></span>
+          <div>
+            <strong>{{ scanResults.length }} 项待检查</strong>
+            <span>低风险项目已默认选中，其余项目由你确认</span>
+          </div>
+        </div>
+        <div class="summary-amount">
+          <strong>{{ formatBytes(totalCleanable) }}</strong>
+          <small>{{ totalFileCount.toLocaleString() }} 个文件 · 发现的文件大小</small>
+        </div>
+      </section>
+
+      <div v-if="isCleaning" class="cleaning-progress" role="status" aria-live="polite">
+        <span>{{ cleanPhase }}</span>
+        <strong>{{ cleanProgress }}%</strong>
+        <div><i :style="{ width: `${cleanProgress}%` }"></i></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="filter-tabs" aria-label="按风险筛选">
           <button
+            v-for="item in filterOptions"
+            :key="item.id"
             type="button"
-            class="invert-selection-button"
-            :disabled="isCleaning"
-            @click="invertCategorySelection"
+            :class="{ active: activeFilter === item.id }"
+            @click="activeFilter = item.id"
           >
-            反选
+            {{ item.label }} <span>{{ item.count }}</span>
           </button>
         </div>
-        <button
-          type="button"
-          :disabled="selectedCategories.size === 0 || isCleaning || dataSource === 'demo'"
-          :title="dataSource === 'demo' ? '演示模式不会执行清理' : undefined"
-          @click="cleanSelected"
-        >
-          <span>{{ isCleaning ? "◌" : "⌫" }}</span>
-          {{ isCleaning ? "清理中" : "清理已选项目" }}
-        </button>
-        <div class="risk-summary">
-          <small><b>{{ safeCount }}</b> 安全</small>
-          <small><b>{{ mediumCount }}</b> 确认</small>
-          <small><b>{{ highCount }}</b> 锁定</small>
-        </div>
-        <p class="summary-note">默认不碰文档、偏好设置、钥匙串和个人数据。</p>
-      </aside>
+        <label class="search-box">
+          <AppIcon name="search" :size="15" />
+          <input v-model="query" type="search" placeholder="搜索项目或路径" />
+        </label>
+      </div>
 
-      <div class="category-list">
+      <section class="table-shell" aria-label="可清理项目">
+        <div class="table-head" aria-hidden="true">
+          <span>选择</span><span>项目</span><span>大小</span><span>建议</span><span></span>
+        </div>
+
         <article
-          v-for="item in scanResults"
+          v-for="item in filteredResults"
           :key="item.id"
-          :class="['category-card', item.risk, { selected: selectedCategories.has(item.id) }]"
+          :class="['category-row', { selected: selectedCategories.has(item.id), expanded: expandedCategory === item.id }]"
         >
-          <div class="category-main">
+          <div class="category-grid">
+            <input
+              type="checkbox"
+              :checked="selectedCategories.has(item.id)"
+              :disabled="isCleaning || item.risk === 'high'"
+              :aria-label="`选择${item.name}`"
+              @change="toggleCategory(item.id, item.risk)"
+            />
+
+            <button type="button" class="item-identity" @click="toggleExpanded(item.id)">
+              <span :class="['icon-tile', categoryTone(item)]">
+                <AppIcon :name="categoryIcon(item)" :size="20" />
+              </span>
+              <span>
+                <strong>{{ item.name }}</strong>
+                <small :title="item.files[0]?.path || item.description">
+                  {{ item.files[0]?.path || item.description }}
+                </small>
+              </span>
+            </button>
+
+            <strong class="item-size">{{ formatBytes(item.total_size) }}</strong>
+            <span :class="['risk', item.risk]">
+              <AppIcon :name="item.risk === 'low' ? 'check' : 'shield'" :size="12" />
+              {{ riskLabel(item.risk) }}
+            </span>
             <button
               type="button"
-              class="checkmark"
-              :disabled="isCleaning || item.risk === 'high'"
-              :aria-label="`${selectedCategories.has(item.id) ? '取消选择' : '选择'}${item.name}`"
-              @click="toggleCategory(item.id, item.risk)"
+              class="expand-button"
+              :aria-label="`${expandedCategory === item.id ? '收起' : '展开'}${item.name}详情`"
+              :aria-expanded="expandedCategory === item.id"
+              @click="toggleExpanded(item.id)"
             >
-              <span v-if="selectedCategories.has(item.id)">✓</span>
-              <span v-else-if="item.risk === 'high'">!</span>
-            </button>
-            <button type="button" class="category-copy" @click="toggleExpanded(item.id)">
-              <strong>{{ item.name }}</strong><small>{{ item.description }}</small>
-            </button>
-            <span class="category-meta">
-              <b>{{ formatBytes(item.total_size) }}</b>
-              <small>{{ item.file_count.toLocaleString() }} 个文件</small>
-            </span>
-            <span class="risk-pill">{{ riskLabel(item.risk) }}</span>
-            <button type="button" class="row-expand" :aria-label="`${expandedCategory === item.id ? '收起' : '展开'}${item.name}`" @click="toggleExpanded(item.id)">
               <AppIcon name="chevron" :size="16" />
             </button>
           </div>
 
-          <div class="preview-head">
-            <button type="button" @click="toggleExpanded(item.id)">
-              {{ expandedCategory === item.id ? "收起详情" : "查看包含内容" }}
-            </button>
-            <small v-if="item.files.length">{{ item.files.length.toLocaleString() }} 个一级项目</small>
-          </div>
+          <div v-if="expandedCategory === item.id" class="inline-detail">
+            <header class="detail-summary">
+              <div>
+                <strong>包含内容</strong>
+                <p>{{ item.description }}</p>
+              </div>
+              <div class="detail-facts">
+                <span>{{ item.files.length.toLocaleString() }} 个一级项目</span>
+                <span>{{ item.file_count.toLocaleString() }} 个文件</span>
+                <span>{{ formatBytes(item.total_size) }}</span>
+              </div>
+            </header>
 
-          <div v-if="expandedCategory === item.id" class="detail-preview">
-            <div v-if="item.files.length" class="detail-list">
-              <div v-for="file in previewDetailItems(item)" :key="file.path" class="detail-row">
-                <span class="detail-kind">{{ detailGlyph(file) }}</span>
-                <span class="detail-path">
-                  <strong>{{ file.path }}</strong>
-                  <small>{{ detailKind(file) }}</small>
+            <div v-if="item.files.length" class="detail-items">
+              <div v-for="file in visibleDetailItems(item)" :key="file.path" class="detail-item">
+                <span class="detail-file-icon"><AppIcon name="folder" :size="16" /></span>
+                <span class="detail-file-copy">
+                  <strong>{{ file.path.split('/').pop() || file.path }}</strong>
+                  <small :title="file.path">{{ file.path }}</small>
                 </span>
+                <span class="detail-kind">{{ detailKind(file) }}</span>
                 <button
                   type="button"
-                  class="open-folder-button"
+                  class="finder-button"
                   :disabled="dataSource === 'demo' || openingPath === file.path"
                   :title="dataSource === 'demo' ? '请在 macOS App 中打开文件夹' : undefined"
-                  :aria-label="'在 Finder 中打开 ' + file.path"
                   @click.stop="openFolder(file.path)"
                 >
-                  {{ openingPath === file.path ? "打开中" : "打开文件夹" }}
+                  <AppIcon name="folder" :size="13" />
+                  <span>{{ openingPath === file.path ? "打开中" : "打开位置" }}</span>
                 </button>
                 <b>{{ formatBytes(file.size) }}</b>
               </div>
             </div>
-            <div v-else class="detail-empty">这个分类没有可展开的一级项目。</div>
+            <p v-else class="detail-empty">这个分类没有可展开的一级项目。</p>
             <button
               v-if="item.files.length > 12"
               type="button"
               class="show-all-button"
               @click="toggleShowAll(item.id)"
             >
-              {{ showAllCategoryIds.has(item.id) ? "收起更多" : `在表格内展开全部 ${item.files.length.toLocaleString()} 项` }}
+              {{ showAllCategoryIds.has(item.id) ? "收起更多" : `继续展开 ${item.files.length.toLocaleString()} 项` }}
             </button>
           </div>
         </article>
-      </div>
-    </div>
 
-    <div v-else-if="!isScanning && !cleanReport" class="empty-state">
-      <span>⌕</span>
-      <h3>还没有扫描记录</h3>
-      <p>开始后会自动归类可清理空间，并把风险最低的项目先选好。</p>
-    </div>
+        <div v-if="filteredResults.length === 0" class="empty compact">
+          <AppIcon name="search" :size="24" />
+          <p>没有匹配的项目</p>
+        </div>
+      </section>
 
+      <footer class="selection-bar">
+        <div class="selection-info">
+          <label>
+            <input
+              type="checkbox"
+              :checked="isAllSelectableSelected"
+              :indeterminate="isSelectionPartial"
+              :disabled="isCleaning"
+              @change="toggleAllCategories"
+            />
+            <span>{{ isAllSelectableSelected ? "取消全选" : "全选可清理项" }}</span>
+          </label>
+          <button type="button" :disabled="isCleaning" @click="invertCategorySelection">反选</button>
+          <div>
+            <strong>{{ formatBytes(selectedTotal) }}</strong>
+            <small>{{ selectedSummary }}</small>
+          </div>
+        </div>
+        <div class="selection-actions">
+          <span><AppIcon name="shield" :size="13" /> 默认不碰个人数据</span>
+          <button
+            type="button"
+            class="primary-action"
+            :disabled="selectedCategories.size === 0 || isCleaning || dataSource === 'demo'"
+            :title="dataSource === 'demo' ? '演示模式不会执行清理' : undefined"
+            @click="cleanSelected"
+          >
+            <AppIcon name="trash" :size="16" />
+            {{ isCleaning ? "清理中" : "清理已选项目" }}
+          </button>
+        </div>
+      </footer>
+    </template>
+
+    <section v-else class="empty-state">
+      <span class="icon-tile tone-map"><AppIcon name="scan" :size="30" /></span>
+      <h1>{{ cleanReport ? "本次清理已完成" : "准备好检查一下了吗？" }}</h1>
+      <p>{{ cleanReport ? "可以重新扫描，确认现在还剩下哪些可处理内容。" : "扫描不会修改文件，也不会自动执行清理。" }}</p>
+      <button type="button" class="primary-action" @click="startScan">
+        <AppIcon :name="cleanReport ? 'refresh' : 'scan'" :size="17" />
+        {{ cleanReport ? "重新扫描" : "开始扫描" }}
+      </button>
+    </section>
   </section>
 </template>
 
 <style scoped>
 .scanner-page {
-  max-width: 1120px;
-  margin: 0 auto;
+  max-width: 1240px;
+  margin: 20px auto 0;
+  color: var(--text);
 }
 
-.scan-command,
-.progress-panel,
-.summary-panel,
-.category-card,
-.empty-state,
-.report-panel {
-  border: 1px solid rgba(238, 249, 255, 0.14);
-  border-radius: 16px;
-  background: rgba(26, 69, 103, 0.3);
-  box-shadow: 0 18px 44px rgba(22, 41, 88, 0.14);
-  backdrop-filter: blur(16px);
-}
-
-.scan-command {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 22px;
-  padding: 22px 24px;
-}
-
-.scan-copy {
-  min-width: 0;
+.content-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
 }
 
 .section-kicker {
-  margin: 0 0 6px;
-  color: rgba(171, 247, 232, 0.9);
-  font-size: 11px;
-  font-weight: 850;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
 }
 
-h1 {
+.content-heading h1,
+.scan-stage h1,
+.empty-state h1 {
   margin: 0;
-  font-size: 34px;
-  line-height: 1.05;
-  letter-spacing: 0;
-  color: #fff;
+  color: var(--text);
+  font-size: 27px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -.6px;
 }
 
-.scan-command p:not(.section-kicker),
-.empty-state p,
-.report-panel p {
-  max-width: 680px;
-  margin: 8px 0 0;
-  color: rgba(235, 248, 255, 0.7);
-  font-size: 14px;
-  line-height: 1.55;
+.content-heading > div > p:last-child {
+  margin: 7px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
 }
 
-.primary-action,
-.summary-panel button {
+.secondary-action,
+.primary-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 42px;
-  padding: 0 16px;
+  border-radius: 9px;
+  font-weight: 550;
+  transition: filter 160ms ease, transform 160ms ease;
+}
+
+.secondary-action {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.primary-action {
+  min-height: 44px;
+  padding: 0 18px;
   border: 0;
-  border-radius: 11px;
-  background: #ffffff;
-  color: #315c7d;
-  font-size: 14px;
-  font-weight: 850;
-  box-shadow: 0 14px 28px rgba(20, 48, 91, 0.18);
-  transition: transform 160ms ease, box-shadow 160ms ease;
-  white-space: nowrap;
-}
-
-.primary-action:hover,
-.summary-panel button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 18px 32px rgba(20, 48, 91, 0.2);
-}
-
-.primary-action:disabled,
-.summary-panel button:disabled {
-  opacity: 0.56;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.progress-panel {
-  margin-top: 12px;
-  padding: 14px 16px;
-}
-
-.progress-copy,
-.phase-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.progress-copy {
-  font-size: 13px;
-  font-weight: 850;
   color: #fff;
-}
-
-.progress-track {
-  height: 8px;
-  margin: 10px 0;
-  border-radius: 999px;
-  background: rgba(235, 248, 255, 0.2);
-  overflow: hidden;
-}
-
-.progress-track div {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #53d8d1, #9ae6ff);
-  transition: width 240ms ease;
-}
-
-.phase-row {
-  color: rgba(235, 248, 255, 0.58);
-  font-size: 11px;
-  font-weight: 750;
-}
-
-.notice {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 215, 92, 0.2);
-  border-radius: 11px;
-  background: rgba(255, 215, 92, 0.14);
-  color: #fff4bf;
+  background: var(--accent);
   font-size: 12px;
-  font-weight: 750;
 }
 
-.cleaning-progress {
-  display: grid;
-  grid-template-columns: auto auto;
-  gap: 4px 10px;
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid rgba(83, 216, 209, 0.35);
-  border-radius: 11px;
-  background: rgba(35, 130, 132, 0.2);
-  color: #fff;
-  font-size: 13px;
-}
+.secondary-action:hover:not(:disabled),
+.primary-action:hover:not(:disabled) { filter: brightness(.96); transform: translateY(-1px); }
+.secondary-action:active:not(:disabled),
+.primary-action:active:not(:disabled) { transform: translateY(0); }
 
-.cleaning-progress > span {
-  justify-self: end;
-  color: rgba(235, 248, 255, 0.7);
-}
-
-.cleaning-progress-track {
-  grid-column: 1 / -1;
-  height: 6px;
-  margin-top: 5px;
-  border-radius: 99px;
-  background: rgba(235, 248, 255, 0.18);
-  overflow: hidden;
-}
-
-.cleaning-progress-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #53d8d1;
-  transition: width 220ms ease;
-}
-
-.report-top {
-  margin-top: 12px;
-}
-
-.open-folder-button {
-  display: inline-flex;
-  align-items: center;
-  justify-self: end;
-  min-width: 52px;
-  padding: 2px 4px;
-  border: 0;
-  background: transparent;
-  color: rgba(218, 244, 255, 0.64);
-  font-size: 10px;
-  font-weight: 750;
-  white-space: nowrap;
-  transition: color 150ms ease, opacity 150ms ease;
-}
-
-.open-folder-button:hover:not(:disabled),
-.open-folder-button:focus-visible {
-  color: #fff;
-}
-
-.open-folder-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.result-layout {
-  display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
-  gap: 14px;
-  margin-top: 14px;
-  align-items: start;
-}
-
-.summary-panel {
-  position: sticky;
-  top: 20px;
-  height: fit-content;
-  padding: 18px;
-}
-
-.summary-label {
-  margin: 0;
-  color: rgba(235, 248, 255, 0.62);
-  font-size: 12px;
-  font-weight: 850;
-}
-
-.summary-panel strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 30px;
-  line-height: 1.08;
-  letter-spacing: 0;
-  color: #fff;
-}
-
-.summary-panel > span {
-  display: block;
-  margin: 4px 0 14px;
-  color: rgba(235, 248, 255, 0.68);
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.selection-actions {
+.scan-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 9px;
-  min-height: 36px;
-  margin: -4px 0 10px;
+  gap: 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
 }
 
-.select-all-control {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: rgba(235, 248, 255, 0.78);
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
-}
+.summary-copy { display: flex; align-items: center; gap: 13px; }
+.summary-copy strong { display: block; font-size: 16px; font-weight: 550; }
+.summary-copy > div > span { display: block; margin-top: 4px; color: var(--text-soft); font-size: 11px; }
+.summary-amount { text-align: right; }
+.summary-amount strong { display: block; font-size: 24px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.summary-amount small { display: block; margin-top: 2px; color: var(--text-soft); font-size: 10px; }
 
-.select-all-control input {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-  accent-color: #35c8c0;
-}
-
-.select-all-control:has(input:disabled) {
-  cursor: not-allowed;
-  opacity: 0.56;
-}
-
-.summary-panel .invert-selection-button {
-  width: auto;
-  min-height: 30px;
-  padding: 0 9px;
-  border: 1px solid rgba(235, 248, 255, 0.18);
-  background: rgba(235, 248, 255, 0.08);
-  box-shadow: none;
-  color: rgba(235, 248, 255, 0.78);
-  font-size: 11px;
-}
-
-.summary-panel .invert-selection-button:hover {
-  box-shadow: none;
-}
-
-.summary-panel button {
-  width: 100%;
-}
-
-.risk-summary {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 7px;
-  margin-top: 12px;
-}
-
-.risk-summary small {
-  display: grid;
-  gap: 1px;
-  padding: 8px 5px;
-  border-radius: 9px;
-  background: rgba(235, 248, 255, 0.11);
-  color: rgba(235, 248, 255, 0.8);
-  font-size: 11px;
-  font-weight: 800;
-  text-align: center;
-}
-
-.risk-summary b {
-  color: #fff;
-  font-size: 13px;
-}
-
-.summary-note {
-  margin: 12px 0 0;
-  color: rgba(235, 248, 255, 0.56);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.category-list {
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.category-card {
-  overflow: hidden;
-}
-
-.category-card.selected {
-  border-color: rgba(83, 216, 209, 0.5);
-  background: rgba(44, 109, 139, 0.34);
-}
-
-.category-main {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 116px 88px;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px 16px 10px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-}
-
-.category-main:disabled {
-  cursor: wait;
-}
-
-.checkmark {
-  width: 26px;
-  height: 26px;
-  border: 2px solid rgba(221, 239, 251, 0.54);
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-size: 14px;
-  font-weight: 900;
-}
-
-.selected .checkmark {
-  border-color: #53d8d1;
-  background: #35c8c0;
-}
-
-.high .checkmark {
-  background: rgba(235, 248, 255, 0.12);
-  color: rgba(235, 248, 255, 0.62);
-}
-
-.category-copy {
-  min-width: 0;
-}
-
-.category-copy strong,
-.category-meta b {
-  display: block;
-  color: #fff;
-  font-size: 14px;
-  line-height: 1.25;
-}
-
-.category-copy small,
-.category-meta small {
-  display: block;
-  margin-top: 3px;
-  color: rgba(235, 248, 255, 0.6);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.category-meta {
-  text-align: right;
-}
-
-.risk-pill {
-  justify-self: end;
-  min-width: 76px;
-  padding: 6px 8px;
-  border-radius: 999px;
-  background: rgba(83, 216, 209, 0.14);
-  color: #bffaf6;
-  font-size: 11px;
-  font-weight: 900;
-  text-align: center;
-}
-
-.medium .risk-pill {
-  background: rgba(255, 215, 92, 0.16);
-  color: #fff2ad;
-}
-
-.high .risk-pill {
-  background: rgba(255, 122, 140, 0.14);
-  color: #ffd4db;
-}
-
-.preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 16px 12px 56px;
-}
-
-.preview-head button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 0;
-  background: transparent;
-  color: rgba(235, 248, 255, 0.68);
-  font-size: 12px;
-  font-weight: 850;
-}
-
-.preview-head small {
-  color: rgba(235, 248, 255, 0.48);
-  font-size: 11px;
-  font-weight: 750;
-}
-
-.detail-preview {
-  padding: 0 16px 14px 56px;
-}
-
-.detail-list,
-.modal-detail-list {
-  display: grid;
-  gap: 7px;
-}
-
-.detail-row {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto minmax(58px, auto);
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 9px;
-  background: rgba(235, 248, 255, 0.1);
-  color: rgba(235, 248, 255, 0.82);
-  font-size: 12px;
-}
-
-.detail-kind {
-  display: grid;
-  place-items: center;
-  color: #6ce6dd;
-  font-size: 13px;
-}
-
-.detail-path {
-  min-width: 0;
-}
-
-.detail-path strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 12px;
-}
-
-.detail-path small {
-  display: block;
-  margin-top: 2px;
-  color: rgba(235, 248, 255, 0.48);
-  font-size: 11px;
-}
-
-.detail-row b {
-  white-space: nowrap;
-  color: #fff;
-  font-size: 12px;
-}
-
-.detail-empty {
-  padding: 10px 12px;
-  border-radius: 9px;
-  background: rgba(235, 248, 255, 0.08);
-  color: rgba(235, 248, 255, 0.62);
-  font-size: 12px;
-}
-
-.show-all-button {
+.icon-tile {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
-  margin-top: 10px;
-  padding: 0 12px;
-  border: 1px solid rgba(238, 249, 255, 0.16);
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.tone-map { color: #4c785d; background: #e8f0e5; }
+.tone-blue { color: #456ba2; background: #e8eef8; }
+.tone-sand { color: #9a6a2d; background: #f5ead9; }
+.tone-rose { color: #a04d48; background: #f6e7e3; }
+
+.notice,
+.report-panel,
+.cleaning-progress {
+  margin: 12px 0 0;
   border-radius: 9px;
-  background: rgba(235, 248, 255, 0.12);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 850;
+  font-size: 11px;
 }
+.notice { padding: 10px 13px; border: 1px solid color-mix(in srgb, var(--warning) 24%, transparent); color: var(--text-soft); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); }
+.report-panel { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--success) 24%, transparent); background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
+.report-icon { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px; color: var(--success); background: color-mix(in srgb, var(--success) 13%, transparent); }
+.report-panel strong { font-weight: 600; }
+.report-panel p { margin: 3px 0 0; color: var(--text-soft); line-height: 1.6; }
+.cleaning-progress { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--success) 24%, transparent); background: var(--surface); }
+.cleaning-progress > span { color: var(--text-soft); }
+.cleaning-progress > div { grid-column: 1 / -1; height: 5px; overflow: hidden; border-radius: 99px; background: var(--surface-strong); }
+.cleaning-progress i { display: block; height: 100%; border-radius: inherit; background: var(--success); transition: width 220ms ease; }
 
-.detail-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 30px;
-  background: rgba(13, 31, 51, 0.55);
-  backdrop-filter: blur(10px);
-}
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 12px 0; }
+.filter-tabs { display: flex; gap: 4px; padding: 3px; border-radius: 8px; background: var(--sidebar-bg); }
+.filter-tabs button { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 12px; border: 0; border-radius: 6px; color: var(--text-soft); background: transparent; font-size: 11px; }
+.filter-tabs button span { color: var(--text-faint); font-size: 9px; font-variant-numeric: tabular-nums; }
+.filter-tabs button.active { color: var(--text); background: var(--surface); box-shadow: 0 1px 4px var(--shadow-soft); }
+.search-box { position: relative; display: flex; align-items: center; }
+.search-box > svg { position: absolute; left: 11px; color: var(--text-faint); pointer-events: none; }
+.search-box input { width: 195px; min-height: 36px; padding: 8px 10px 8px 34px; border: 1px solid var(--border); border-radius: 8px; outline: 0; color: var(--text); background: var(--surface); font-size: 11px; }
+.search-box input::placeholder { color: var(--text-faint); }
 
-.detail-modal {
-  width: min(760px, 100%);
-  max-height: min(680px, calc(100vh - 60px));
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  border: 1px solid rgba(238, 249, 255, 0.18);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(59, 123, 157, 0.98), rgba(36, 77, 112, 0.98)),
-    #2d668f;
-  box-shadow: 0 28px 80px rgba(12, 28, 58, 0.34);
-  overflow: hidden;
-}
+.table-shell { overflow: hidden; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); box-shadow: var(--shadow-soft); }
+.table-head,
+.category-grid { display: grid; grid-template-columns: 44px minmax(0, 1fr) 106px 112px 42px; align-items: center; }
+.table-head { min-height: 39px; color: var(--text-faint); background: color-mix(in srgb, var(--surface-soft) 55%, var(--surface)); font-size: 10px; }
+.table-head span { padding: 0 10px; }
+.category-row { border-top: 1px solid var(--border); }
+.category-row:first-of-type { border-top: 0; }
+.category-grid { min-height: 64px; transition: background 160ms ease; }
+.category-row.selected .category-grid { background: color-mix(in srgb, var(--accent-soft) 18%, transparent); }
+.category-row.expanded .category-grid { background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface)); }
+.category-grid > input { justify-self: center; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.item-identity { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 8px 10px; border: 0; color: var(--text); background: transparent; text-align: left; }
+.item-identity > span:last-child { min-width: 0; }
+.item-identity strong { display: block; font-size: 13px; font-weight: 550; }
+.item-identity small { display: block; max-width: 460px; margin-top: 4px; overflow: hidden; color: var(--text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.item-size { padding: 0 10px; font-size: 13px; font-weight: 550; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.risk { display: inline-flex; align-items: center; justify-self: start; gap: 4px; padding: 4px 7px; border-radius: 5px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+.risk.low { color: #2c6245; background: #e8f1e7; }
+.risk.medium { color: #82500f; background: #fbefda; }
+.risk.high { color: #a03b38; background: #f9e8e5; }
+.expand-button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; color: var(--text-soft); background: transparent; }
+.expand-button:hover { background: var(--surface-soft); }
+.expand-button svg { transition: transform 180ms ease; }
+.category-row.expanded .expand-button svg { transform: rotate(90deg); }
 
-.detail-modal header {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 20px 22px 16px;
-  border-bottom: 1px solid rgba(238, 249, 255, 0.12);
-}
+.inline-detail { margin: 0 10px 12px 56px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.detail-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 15px 18px; background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface)); }
+.detail-summary strong { font-size: 11px; font-weight: 600; }
+.detail-summary p { margin: 5px 0 0; color: var(--text-soft); font-size: 10px; line-height: 1.6; }
+.detail-facts { display: flex; justify-content: flex-end; gap: 12px; flex-wrap: wrap; color: var(--text-soft); font-size: 10px; white-space: nowrap; }
+.detail-items { padding: 0 18px; }
+.detail-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) 70px 82px 72px; align-items: center; gap: 10px; min-height: 55px; border-top: 1px solid var(--border); font-size: 10px; }
+.detail-item:first-child { border-top: 0; }
+.detail-file-icon { color: var(--accent); }
+.detail-file-copy { min-width: 0; }
+.detail-file-copy strong { display: block; overflow: hidden; font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.detail-file-copy small { display: block; margin-top: 2px; overflow: hidden; color: var(--text-soft); text-overflow: ellipsis; white-space: nowrap; }
+.detail-kind { color: var(--text-soft); }
+.finder-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; color: var(--text-soft); background: transparent; font-size: 10px; }
+.detail-item > b { text-align: right; font-size: 11px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.detail-empty { margin: 0; padding: 16px 18px; color: var(--text-soft); font-size: 10px; }
+.show-all-button { width: calc(100% - 36px); min-height: 32px; margin: 0 18px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--accent); background: var(--surface-soft); font-size: 10px; }
 
-.detail-modal h3 {
-  margin: 0;
-  color: #fff;
-  font-size: 20px;
-}
+.empty.compact { display: grid; place-items: center; gap: 8px; padding: 38px; color: var(--text-faint); }
+.empty.compact p { margin: 0; font-size: 11px; }
 
-.detail-modal header span {
-  display: block;
-  margin-top: 5px;
-  color: rgba(235, 248, 255, 0.62);
-  font-size: 12px;
-  font-weight: 750;
-}
+.selection-bar { position: sticky; z-index: 12; bottom: -44px; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 22px -32px -44px; padding: 15px 32px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 94%, transparent); box-shadow: 0 -4px 15px color-mix(in srgb, var(--shadow-soft) 45%, transparent); backdrop-filter: blur(16px); }
+.selection-info { display: flex; align-items: center; gap: 12px; }
+.selection-info label { display: flex; align-items: center; gap: 7px; color: var(--text-soft); font-size: 10px; cursor: pointer; }
+.selection-info label input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.selection-info > button { padding: 6px; border: 0; color: var(--accent); background: transparent; font-size: 10px; }
+.selection-info > div { padding-left: 12px; border-left: 1px solid var(--border); }
+.selection-info strong { display: block; font-size: 19px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.selection-info small { display: block; margin-top: 2px; color: var(--text-soft); font-size: 9px; }
+.selection-actions { display: flex; align-items: center; gap: 13px; }
+.selection-actions > span { display: flex; align-items: center; gap: 5px; color: var(--text-soft); font-size: 9px; }
 
-.detail-modal header button {
-  width: 34px;
-  height: 34px;
-  border: 0;
-  border-radius: 10px;
-  background: rgba(235, 248, 255, 0.12);
-  color: #fff;
-  font-size: 24px;
-  line-height: 1;
-}
+.scan-stage { max-width: 430px; margin: 72px auto; text-align: center; }
+.scan-emblem { position: relative; display: grid; place-items: center; width: 94px; height: 94px; margin: auto; color: var(--accent); }
+.spinner { position: absolute; inset: 0; border: 3px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin 1.2s linear infinite; }
+.scan-stage h1 { margin-top: 28px; font-size: 20px; }
+.scan-meter { height: 6px; margin: 20px 0 0; overflow: hidden; border-radius: 99px; background: var(--surface-strong); }
+.scan-meter span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 260ms ease; }
+.scan-stage > p { margin: 12px 0; color: var(--text-soft); font-size: 11px; }
+.phase-row { display: flex; justify-content: space-between; gap: 8px; margin-top: 16px; color: var(--text-faint); font-size: 9px; }
 
-.modal-detail-list {
-  overflow: auto;
-  padding: 16px 22px 22px;
-}
+.empty-state { display: grid; place-items: center; padding: 76px 20px; color: var(--text-soft); text-align: center; }
+.empty-state > .icon-tile { width: 64px; height: 64px; border-radius: 18px; }
+.empty-state h1 { margin-top: 20px; font-size: 20px; }
+.empty-state p { margin: 10px 0 0; font-size: 11px; }
+.empty-state .primary-action { margin-top: 22px; }
 
-.empty-state {
-  display: grid;
-  place-items: center;
-  margin-top: 14px;
-  padding: 42px 20px;
-  text-align: center;
-}
-
-.empty-state > span {
-  color: #6ce6dd;
-  font-size: 36px;
-}
-
-.empty-state h3 {
-  margin: 10px 0 0;
-  color: #fff;
-  font-size: 18px;
-}
-
-.report-panel {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  margin-top: 14px;
-  padding: 14px 16px;
-}
-
-.report-panel > span {
-  color: #6ce6dd;
-  font-size: 22px;
-}
-
-.report-panel strong {
-  font-size: 15px;
-  color: #fff;
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1080px) {
-  .scan-command {
-    grid-template-columns: 1fr;
-  }
-
-  .primary-action {
-    justify-self: start;
-  }
-
-  .result-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .summary-panel {
-    position: static;
-  }
-}
-</style>
-
-<style scoped>
-/* v4 visual layer: the scan engine and selection rules above remain unchanged. */
-.scanner-page { max-width: 1240px; margin: 20px auto 0; color: var(--text); }
-.scan-command,
-.progress-panel,
-.summary-panel,
-.category-card,
-.empty-state,
-.report-panel {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: var(--shadow-soft);
-  backdrop-filter: none;
-}
-.scan-command { padding: 26px 28px; border-radius: 18px; }
-.section-kicker { color: var(--accent); }
-h1 { color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 33px; font-weight: 600; }
-.scan-command p:not(.section-kicker), .empty-state p, .report-panel p { color: var(--text-soft); }
-.primary-action, .summary-panel button { color: #fff; background: var(--accent); box-shadow: none; }
-.primary-action:hover, .summary-panel button:hover { background: var(--accent-strong); box-shadow: none; }
-.progress-panel { padding: 14px 16px; }
-.progress-copy { color: var(--text); }
-.progress-track { background: var(--surface-strong); }
-.progress-track div { background: var(--accent); }
-.phase-row { color: var(--text-faint); }
-.notice { border-color: color-mix(in srgb, var(--warning) 25%, transparent); color: var(--text); background: color-mix(in srgb, var(--warning) 10%, var(--surface)); }
-.cleaning-progress { border-color: color-mix(in srgb, var(--success) 30%, transparent); color: var(--text); background: color-mix(in srgb, var(--success) 9%, var(--surface)); }
-.cleaning-progress > span { color: var(--text-soft); }
-.cleaning-progress-track { background: var(--surface-strong); }
-.cleaning-progress-track span { background: var(--success); }
-.result-layout { grid-template-columns: 250px minmax(0, 1fr); gap: 12px; }
-.summary-panel { top: 92px; padding: 18px; border-radius: 16px; }
-.summary-label, .summary-panel > span, .summary-note { color: var(--text-soft); }
-.summary-panel strong { color: var(--text); }
-.select-all-control { color: var(--text-soft); }
-.select-all-control input { accent-color: var(--accent); }
-.summary-panel .invert-selection-button { border-color: var(--border); color: var(--text-soft); background: var(--surface-soft); }
-.risk-summary small { color: var(--text-soft); background: var(--surface-soft); }
-.risk-summary b { color: var(--text); }
-.category-list { gap: 8px; }
-.category-card { border-radius: 14px; }
-.category-card.selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 22%, var(--surface)); }
-.category-main { grid-template-columns: 28px minmax(0, 1fr) 100px 80px 28px; padding: 14px 15px 8px; }
-.checkmark { padding: 0; border-color: var(--border-strong); color: #fff; background: transparent; }
-.selected .checkmark { border-color: var(--accent); background: var(--accent); }
-.high .checkmark { color: var(--text-faint); background: var(--surface-strong); }
-.category-copy { padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
-.category-copy strong, .category-meta b { color: var(--text); }
-.category-copy small, .category-meta small { color: var(--text-faint); }
-.risk-pill { color: var(--success); background: color-mix(in srgb, var(--success) 11%, transparent); }
-.medium .risk-pill { color: var(--warning); background: color-mix(in srgb, var(--warning) 11%, transparent); }
-.high .risk-pill { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
-.row-expand { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; color: var(--text-faint); background: transparent; transform: rotate(90deg); transition: transform 150ms ease, background 150ms ease; }
-.category-card:has(.detail-preview) .row-expand { transform: rotate(180deg); }
-.row-expand:hover { background: var(--surface-soft); }
-.preview-head { padding: 0 15px 11px 55px; }
-.preview-head button { color: var(--accent); }
-.preview-head small { color: var(--text-faint); }
-.detail-preview { padding: 0 15px 14px 55px; }
-.detail-list { gap: 5px; }
-.detail-row { border: 1px solid var(--border); color: var(--text-soft); background: var(--surface-soft); }
-.detail-kind { color: var(--accent); }
-.detail-path strong, .detail-row b { color: var(--text); }
-.detail-path small { color: var(--text-faint); }
-.open-folder-button { color: var(--accent); }
-.open-folder-button:hover:not(:disabled), .open-folder-button:focus-visible { color: var(--accent-strong); }
-.detail-empty { color: var(--text-soft); background: var(--surface-soft); }
-.show-all-button { border-color: var(--border); color: var(--accent); background: var(--surface-soft); }
-.empty-state > span { color: var(--accent); }
-.empty-state h3, .report-panel strong { color: var(--text); }
-.report-panel > span { color: var(--success); }
-
-@media (max-width: 1100px) {
-  .result-layout { grid-template-columns: 220px minmax(0, 1fr); }
-  .category-main { grid-template-columns: 28px minmax(0, 1fr) 88px 28px; }
-  .risk-pill { display: none; }
+  .table-head,
+  .category-grid { grid-template-columns: 42px minmax(0, 1fr) 88px 42px; }
+  .table-head span:nth-child(4),
+  .risk { display: none; }
+  .item-identity small { max-width: 330px; }
+  .selection-bar { margin-inline: -22px; padding-inline: 22px; }
 }
 </style>

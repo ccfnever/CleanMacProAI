@@ -1290,7 +1290,7 @@ function normalizePath(path: string): string {
 .apps-panel { min-width: 0; padding: 0; }
 .apps-head { align-items: end; padding: 24px 26px; border: 1px solid var(--border); border-radius: 18px 18px 0 0; background: var(--surface); }
 .apps-head .section-kicker { margin: 0 0 7px; color: var(--accent); font-size: 9px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
-.apps-head h1 { max-width: 610px; margin: 0; color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 26px; font-weight: 600; line-height: 1.2; }
+.apps-head h1 { max-width: 610px; margin: 0; color: var(--text); font-family: var(--font-ui); font-size: 26px; font-weight: 600; line-height: 1.2; }
 .apps-head p:not(.section-kicker) { max-width: 600px; margin: 8px 0 0; color: var(--text-soft); font-size: 10px; line-height: 1.55; }
 .apps-head-actions { display: flex; align-items: center; gap: 8px; }
 .search-box { display: flex; align-items: center; gap: 7px; width: 238px; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-faint); background: var(--surface-soft); }

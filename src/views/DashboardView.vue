@@ -111,7 +111,7 @@ const themeGreeting = computed(() => ({
 :global(:root[data-theme="classic"]) .hero-panel { background-position: center, center 54%; filter: saturate(.7); }
 .hero-copy { position: relative; z-index: 1; align-self: center; width: min(610px, 62%); padding: 48px 52px; }
 .hero-tag { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 11px; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; background: rgba(255,255,255,.12); font-size: 10px; font-weight: 750; backdrop-filter: blur(12px); }
-.hero-copy h1 { margin: 18px 0 0; font-family: ui-serif, "Songti SC", "STSong", serif; font-size: clamp(34px, 3.4vw, 52px); font-weight: 600; line-height: 1.12; letter-spacing: -.035em; text-wrap: balance; }
+.hero-copy h1 { margin: 18px 0 0; font-family: var(--font-ui); font-size: clamp(34px, 3.4vw, 52px); font-weight: 600; line-height: 1.12; letter-spacing: -.035em; text-wrap: balance; }
 .hero-copy > p { max-width: 480px; margin: 16px 0 0; color: rgba(255,255,255,.82); font-size: 14px; line-height: 1.75; }
 .hero-actions { display: flex; gap: 10px; margin-top: 27px; }
 .hero-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 17px; border-radius: 11px; font-size: 12px; font-weight: 800; transition: transform 150ms ease, background 150ms ease; }
@@ -125,7 +125,7 @@ const themeGreeting = computed(() => ({
 
 .intro-panel { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 28px; align-items: end; margin-top: 16px; padding: 27px 30px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-soft); }
 .section-kicker { margin: 0 0 7px; color: var(--accent); font-size: 10px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
-.intro-copy h2 { margin: 0; color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
+.intro-copy h2 { margin: 0; color: var(--text); font-family: var(--font-ui); font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
 .intro-copy > p:last-child { max-width: 650px; margin: 10px 0 0; color: var(--text-soft); font-size: 12px; line-height: 1.8; }
 .scan-status { display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 11px; padding: 14px; border-radius: 13px; background: var(--surface-soft); }
 .status-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: var(--accent); background: var(--accent-soft); }

@@ -103,7 +103,7 @@ async function openFullDiskAccess() {
 .settings-page { max-width: 1240px; margin: 20px auto 0; color: var(--text); }
 .settings-intro { padding: 24px 28px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-soft); }
 .section-kicker { margin: 0 0 7px; color: var(--accent); font-size: 9px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
-.settings-intro h1 { margin: 0; color: var(--text); font-family: ui-serif, "Songti SC", serif; font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
+.settings-intro h1 { margin: 0; color: var(--text); font-family: var(--font-ui); font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
 .settings-intro > p:last-child { margin: 8px 0 0; color: var(--text-soft); font-size: 11px; }
 .panel { padding: 21px; border: 1px solid var(--border); border-radius: 17px; background: var(--surface); box-shadow: var(--shadow-soft); }
 .theme-panel { margin-top: 12px; }
