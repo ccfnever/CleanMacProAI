@@ -57,6 +57,33 @@ export interface DiskInfo {
   usage_percent: number;
 }
 
+export interface SpaceMapEntry {
+  name: string;
+  path: string;
+  logical_size: number;
+  allocated_size: number;
+  file_count: number;
+  directory_count: number;
+  modified_at?: string;
+  is_dir: boolean;
+  is_package: boolean;
+  is_cloud_placeholder: boolean;
+}
+
+export interface SpaceMapResult {
+  root_path: string;
+  display_path: string;
+  logical_size: number;
+  allocated_size: number;
+  file_count: number;
+  directory_count: number;
+  entries: SpaceMapEntry[];
+  skipped_items: number;
+  hard_link_duplicates: number;
+  symlink_count: number;
+  scan_duration_ms: number;
+}
+
 export async function invokeOrDemo<T>(
   command: string,
   fallback: T,
@@ -107,6 +134,27 @@ export const demoDiskInfo: DiskInfo = {
   available_bytes: 86_430_826_496,
   used_bytes: 413_846_964_224,
   usage_percent: 82.7,
+};
+
+export const demoSpaceMapResult: SpaceMapResult = {
+  root_path: "/Users/demo",
+  display_path: "~",
+  logical_size: 194_615_705_600,
+  allocated_size: 178_670_639_104,
+  file_count: 286_431,
+  directory_count: 39_842,
+  skipped_items: 0,
+  hard_link_duplicates: 138,
+  symlink_count: 492,
+  scan_duration_ms: 2840,
+  entries: [
+    { name: "Library", path: "/Users/demo/Library", logical_size: 82_560_573_440, allocated_size: 76_209_750_016, file_count: 198_421, directory_count: 26_103, modified_at: "2026-09-09T06:30:00Z", is_dir: true, is_package: false, is_cloud_placeholder: false },
+    { name: "Projects", path: "/Users/demo/Projects", logical_size: 54_835_773_440, allocated_size: 49_391_173_632, file_count: 52_913, directory_count: 8_421, modified_at: "2026-09-10T02:18:00Z", is_dir: true, is_package: false, is_cloud_placeholder: false },
+    { name: "Pictures", path: "/Users/demo/Pictures", logical_size: 29_183_721_472, allocated_size: 26_982_268_928, file_count: 8_214, directory_count: 1_053, modified_at: "2026-09-08T13:42:00Z", is_dir: true, is_package: false, is_cloud_placeholder: false },
+    { name: "Downloads", path: "/Users/demo/Downloads", logical_size: 18_012_946_432, allocated_size: 17_208_967_168, file_count: 2_168, directory_count: 218, modified_at: "2026-09-10T01:05:00Z", is_dir: true, is_package: false, is_cloud_placeholder: false },
+    { name: "Documents", path: "/Users/demo/Documents", logical_size: 7_516_192_768, allocated_size: 6_744_244_224, file_count: 13_102, directory_count: 3_481, modified_at: "2026-09-09T10:22:00Z", is_dir: true, is_package: false, is_cloud_placeholder: false },
+    { name: "Movies", path: "/Users/demo/Movies", logical_size: 2_506_498_048, allocated_size: 2_134_235_136, file_count: 1_613, directory_count: 566, modified_at: "2026-08-28T08:00:00Z", is_dir: true, is_package: false, is_cloud_placeholder: false },
+  ],
 };
 
 export const demoScanResult: ScanResult = {

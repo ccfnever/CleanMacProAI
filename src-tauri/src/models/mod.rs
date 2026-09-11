@@ -119,6 +119,50 @@ pub struct DiskInfo {
     pub usage_percent: f64,
 }
 
+// ── 空间地图 ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceMapResult {
+    /// 本次分析的规范化根路径
+    pub root_path: String,
+    /// 用于界面展示的路径（用户目录会缩写为 ~）
+    pub display_path: String,
+    /// 已读取文件的逻辑大小；矩形图按此数值计算面积
+    pub logical_size: u64,
+    /// 文件系统报告的已分配块大小（APFS 克隆/压缩仍可能共享物理块）
+    pub allocated_size: u64,
+    /// 成功统计的唯一普通文件数
+    pub file_count: u64,
+    /// 成功遍历的目录数（不含分析根目录）
+    pub directory_count: u64,
+    /// 根目录的直接子项，包含其递归汇总值
+    pub entries: Vec<SpaceMapEntry>,
+    /// 因权限、并发删除或 I/O 错误无法读取的条目数
+    pub skipped_items: u64,
+    /// 已跳过的重复硬链接数，避免重复计算占用
+    pub hard_link_duplicates: u64,
+    /// 未跟随的符号链接数，避免越界和循环
+    pub symlink_count: u64,
+    /// 分析耗时（毫秒）
+    pub scan_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceMapEntry {
+    pub name: String,
+    pub path: String,
+    pub logical_size: u64,
+    pub allocated_size: u64,
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub modified_at: Option<String>,
+    pub is_dir: bool,
+    /// macOS 应用、照片图库等包目录，进入前需要用户明确选择
+    pub is_package: bool,
+    /// iCloud 尚未完整下载到本机的占位条目
+    pub is_cloud_placeholder: bool,
+}
+
 // ── 扫描进度 ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, defineAsyncComponent, onMounted, ref } from "vue";
 import { storeToRefs } from "pinia";
 import Sidebar from "./components/Sidebar.vue";
 import AppIcon from "./components/AppIcon.vue";
@@ -10,9 +10,10 @@ import SettingsView from "./views/SettingsView.vue";
 import { demoDiskInfo, invokeOrDemo, type DiskInfo } from "./lib/demoData";
 import { useThemeStore, type ThemeName } from "./stores/theme";
 
-type ViewName = "dashboard" | "scanner" | "uninstaller" | "settings";
+type ViewName = "dashboard" | "scanner" | "space-map" | "uninstaller" | "settings";
 
 const currentView = ref<ViewName>("dashboard");
+const SpaceMapView = defineAsyncComponent(() => import("./views/SpaceMapView.vue"));
 const diskInfo = ref<DiskInfo>(demoDiskInfo);
 const dataSource = ref<"native" | "demo">("demo");
 const diskNotice = ref<string | null>(null);
@@ -22,6 +23,7 @@ const { currentTheme } = storeToRefs(themeStore);
 const currentTitle = computed(() => ({
   dashboard: "概览",
   scanner: "安心清理",
+  "space-map": "空间地图",
   uninstaller: "应用管理",
   settings: "外观与设置",
 })[currentView.value]);
@@ -29,7 +31,7 @@ const currentTitle = computed(() => ({
 const engineLabel = computed(() => dataSource.value === "native" ? "本机引擎在线" : "预览模式");
 
 function navigate(view: string) {
-  if (["dashboard", "scanner", "uninstaller", "settings"].includes(view)) {
+  if (["dashboard", "scanner", "space-map", "uninstaller", "settings"].includes(view)) {
     currentView.value = view as ViewName;
   }
 }
@@ -59,7 +61,7 @@ onMounted(async () => {
       <header class="topbar" data-tauri-drag-region>
         <div class="page-heading">
           <span class="page-symbol">
-            <AppIcon :name="currentView === 'scanner' ? 'shield' : currentView === 'uninstaller' ? 'apps' : currentView === 'settings' ? 'settings' : 'home'" :size="18" />
+            <AppIcon :name="currentView === 'scanner' ? 'shield' : currentView === 'space-map' ? 'map' : currentView === 'uninstaller' ? 'apps' : currentView === 'settings' ? 'settings' : 'home'" :size="18" />
           </span>
           <div>
             <h2>{{ currentTitle }}</h2>
@@ -87,6 +89,7 @@ onMounted(async () => {
       <Transition name="view-fade" mode="out-in">
         <DashboardView v-if="currentView === 'dashboard'" key="dashboard" :disk-info="diskInfo" :data-source="dataSource" @navigate="navigate" />
         <ScannerView v-else-if="currentView === 'scanner'" key="scanner" />
+        <SpaceMapView v-else-if="currentView === 'space-map'" key="space-map" />
         <UninstallerView v-else-if="currentView === 'uninstaller'" key="uninstaller" />
         <SettingsView v-else key="settings" />
       </Transition>

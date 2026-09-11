@@ -8,6 +8,7 @@ mod models;
 mod rules;
 
 use commands::scanner::ScanState;
+use commands::space_map::SpaceMapState;
 use models::ScanProgress;
 use std::sync::Mutex;
 
@@ -23,6 +24,7 @@ fn main() {
                 found_bytes: 0,
             },
         }))
+        .manage(SpaceMapState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +39,9 @@ fn main() {
             commands::system::get_disk_info,
             commands::system::open_in_finder,
             commands::system::request_permissions,
+            commands::space_map::analyze_space_map,
+            commands::space_map::cancel_space_map,
+            commands::space_map::choose_space_map_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
