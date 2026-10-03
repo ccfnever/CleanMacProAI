@@ -13,7 +13,9 @@ import {
   demoSpaceMapResult,
   formatBytes,
   invokeOrDemo,
+  type InvokeResult,
   type SpaceMapEntry,
+  type SpaceMapProgress,
   type SpaceMapResult,
 } from "../lib/demoData";
 
@@ -26,16 +28,29 @@ const { currentTheme } = storeToRefs(themeStore);
 const chartElement = ref<HTMLDivElement | null>(null);
 const result = ref<SpaceMapResult | null>(null);
 const loading = ref(false);
+const cancelled = ref(false);
 const errorMessage = ref("");
 const source = ref<"native" | "demo">("demo");
 const query = ref("");
 const sortKey = ref<SortKey>("logical");
 const scopeRoot = ref("");
+const minimumFileSize = ref(100 * 1024 * 1024);
+const progress = ref<SpaceMapProgress>(emptyProgress());
 let chart: ReturnType<typeof echarts.init> | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let progressTimer: number | undefined;
+let progressRequestInFlight = false;
 let requestSequence = 0;
 
 const isNativeRuntime = Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+
+const visualizationEntries = computed(() =>
+  (loading.value ? progress.value.entries : result.value?.entries ?? [])
+    .filter((entry) => entry.logical_size > 0),
+);
+const liveTiles = computed(() => visualizationEntries.value.slice(0, 6));
+
+const thresholdLabel = computed(() => formatThreshold(minimumFileSize.value));
 
 const entries = computed(() => {
   const keyword = query.value.trim().toLocaleLowerCase("zh-CN");
@@ -50,7 +65,13 @@ const entries = computed(() => {
 });
 
 const breadcrumbItems = computed(() => {
-  if (!result.value) return [];
+  if (!result.value) {
+    if (!loading.value || !progress.value.root_path) return [];
+    return [{
+      label: progress.value.display_path || progress.value.root_path,
+      path: progress.value.root_path,
+    }];
+  }
   const root = scopeRoot.value || result.value.root_path;
   const current = result.value.root_path;
   const rootParts = root.split("/").filter(Boolean);
@@ -84,6 +105,10 @@ function formatCount(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
+function formatThreshold(value: number) {
+  return formatBytes(value).replace(".0 ", " ");
+}
+
 function formatDate(value?: string) {
   if (!value) return "未知";
   const date = new Date(value);
@@ -91,23 +116,69 @@ function formatDate(value?: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-async function analyze(path?: string, resetScope = false) {
-  const sequence = ++requestSequence;
+function emptyProgress(): SpaceMapProgress {
+  return {
+    is_scanning: false,
+    root_path: "",
+    display_path: "",
+    minimum_file_size: minimumFileSize.value,
+    scanned_file_count: 0,
+    scanned_directory_count: 0,
+    matched_file_count: 0,
+    matched_logical_size: 0,
+    matched_allocated_size: 0,
+    ignored_file_count: 0,
+    ignored_logical_size: 0,
+    skipped_items: 0,
+    hard_link_duplicates: 0,
+    symlink_count: 0,
+    entries: [],
+    elapsed_ms: 0,
+  };
+}
+
+function disposeChart() {
   resizeObserver?.disconnect();
   resizeObserver = null;
   chart?.dispose();
   chart = null;
+}
+
+async function analyze(path?: string, resetScope = false) {
+  const sequence = ++requestSequence;
+  stopProgressPolling();
+  disposeChart();
   loading.value = true;
+  cancelled.value = false;
   errorMessage.value = "";
-  const response = await invokeOrDemo<SpaceMapResult>(
-    "analyze_space_map",
-    demoResultFor(path),
-    path ? { path } : undefined,
-  );
+  progress.value = {
+    ...emptyProgress(),
+    is_scanning: true,
+    root_path: path ?? result.value?.root_path ?? "~",
+    display_path: path ?? result.value?.display_path ?? "~",
+    minimum_file_size: minimumFileSize.value,
+  };
+  await nextTick();
+  renderChart();
+
+  const fallback = demoResultFor(path);
+  let response: InvokeResult<SpaceMapResult>;
+  if (isNativeRuntime) {
+    startProgressPolling(sequence);
+    response = await invokeOrDemo<SpaceMapResult>("analyze_space_map", fallback, {
+      ...(path ? { path } : {}),
+      minimumFileSize: minimumFileSize.value,
+    });
+  } else {
+    await simulateProgress(fallback, sequence);
+    response = { source: "demo" as const, data: fallback };
+  }
+  stopProgressPolling();
   if (sequence !== requestSequence) return;
-  loading.value = false;
 
   if (response.source === "error") {
+    disposeChart();
+    loading.value = false;
     errorMessage.value = response.error;
     return;
   }
@@ -115,14 +186,89 @@ async function analyze(path?: string, resetScope = false) {
   result.value = response.data;
   source.value = response.source === "native" ? "native" : "demo";
   if (resetScope || !scopeRoot.value) scopeRoot.value = response.data.root_path;
+  disposeChart();
+  loading.value = false;
   await nextTick();
   renderChart();
 }
 
+function startProgressPolling(sequence: number) {
+  const poll = async () => {
+    if (progressRequestInFlight || sequence !== requestSequence) return;
+    progressRequestInFlight = true;
+    try {
+      const snapshot = await invoke<SpaceMapProgress>("get_space_map_progress");
+      if (sequence !== requestSequence) return;
+      progress.value = snapshot;
+    } catch {
+      // 最终 analyze_space_map 调用负责呈现错误，轮询失败不打断扫描。
+    } finally {
+      progressRequestInFlight = false;
+    }
+  };
+  progressTimer = window.setInterval(() => void poll(), 130);
+}
+
+function stopProgressPolling() {
+  if (progressTimer !== undefined) window.clearInterval(progressTimer);
+  progressTimer = undefined;
+  progressRequestInFlight = false;
+}
+
+function stopAnalysis() {
+  requestSequence += 1;
+  stopProgressPolling();
+  if (isNativeRuntime) void invoke("cancel_space_map");
+  disposeChart();
+  loading.value = false;
+  cancelled.value = true;
+  void nextTick(renderChart);
+}
+
+async function simulateProgress(finalResult: SpaceMapResult, sequence: number) {
+  const steps = 10;
+  for (let step = 1; step <= steps; step += 1) {
+    if (sequence !== requestSequence) return;
+    const entries = finalResult.entries
+      .slice(0, Math.max(1, Math.ceil(step * finalResult.entries.length / steps)))
+      .map((entry, index) => {
+        const factor = Math.min(1, Math.max(.12, (step - index * .7) / 5));
+        return {
+          ...entry,
+          logical_size: Math.round(entry.logical_size * factor),
+          allocated_size: Math.round(entry.allocated_size * factor),
+          file_count: Math.max(1, Math.round(entry.file_count * factor)),
+        };
+      });
+    const factor = step / steps;
+    progress.value = {
+      ...emptyProgress(),
+      is_scanning: true,
+      root_path: finalResult.root_path,
+      display_path: finalResult.display_path,
+      current_path: entries[entries.length - 1]?.path.replace("/Users/demo", "~"),
+      minimum_file_size: minimumFileSize.value,
+      scanned_file_count: Math.round(finalResult.scanned_file_count * factor),
+      scanned_directory_count: Math.round(finalResult.directory_count * factor),
+      matched_file_count: entries.reduce((sum, entry) => sum + entry.file_count, 0),
+      matched_logical_size: entries.reduce((sum, entry) => sum + entry.logical_size, 0),
+      matched_allocated_size: entries.reduce((sum, entry) => sum + entry.allocated_size, 0),
+      ignored_file_count: Math.round(finalResult.ignored_file_count * factor),
+      ignored_logical_size: Math.round(finalResult.ignored_logical_size * factor),
+      skipped_items: 0,
+      hard_link_duplicates: Math.round(finalResult.hard_link_duplicates * factor),
+      symlink_count: Math.round(finalResult.symlink_count * factor),
+      entries,
+      elapsed_ms: step * 130,
+    };
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 130));
+  }
+}
+
 function demoResultFor(path?: string): SpaceMapResult {
-  if (!path || path === demoSpaceMapResult.root_path) return demoSpaceMapResult;
+  if (!path || path === demoSpaceMapResult.root_path) return adaptDemoThreshold(demoSpaceMapResult);
   const parent = demoSpaceMapResult.entries.find((entry) => entry.path === path);
-  if (!parent) return { ...demoSpaceMapResult, root_path: path, display_path: path, entries: [] };
+  if (!parent) return adaptDemoThreshold({ ...demoSpaceMapResult, root_path: path, display_path: path, entries: [] });
   const ratios = [0.46, 0.28, 0.17, 0.09];
   const names = parent.name === "Projects"
     ? ["build", "node_modules", "Sources", "Archives"]
@@ -139,7 +285,7 @@ function demoResultFor(path?: string): SpaceMapResult {
     is_package: false,
     is_cloud_placeholder: false,
   }));
-  return {
+  return adaptDemoThreshold({
     ...demoSpaceMapResult,
     root_path: path,
     display_path: path.replace("/Users/demo", "~"),
@@ -149,6 +295,26 @@ function demoResultFor(path?: string): SpaceMapResult {
     directory_count: parent.directory_count,
     entries: childEntries,
     scan_duration_ms: 940,
+  });
+}
+
+function adaptDemoThreshold(base: SpaceMapResult): SpaceMapResult {
+  const factor = Math.min(1.08, Math.sqrt((100 * 1024 * 1024) / minimumFileSize.value));
+  const entries = base.entries.map((entry) => ({
+    ...entry,
+    logical_size: Math.round(entry.logical_size * factor),
+    allocated_size: Math.round(entry.allocated_size * factor),
+    file_count: Math.max(1, Math.round(entry.file_count * factor)),
+  }));
+  const matchedFileCount = entries.reduce((sum, entry) => sum + entry.file_count, 0);
+  return {
+    ...base,
+    minimum_file_size: minimumFileSize.value,
+    logical_size: entries.reduce((sum, entry) => sum + entry.logical_size, 0),
+    allocated_size: entries.reduce((sum, entry) => sum + entry.allocated_size, 0),
+    file_count: matchedFileCount,
+    ignored_file_count: Math.max(0, base.scanned_file_count - matchedFileCount),
+    entries,
   };
 }
 
@@ -193,7 +359,7 @@ async function requestFullDiskAccess() {
 }
 
 function renderChart() {
-  if (!chartElement.value || !result.value) return;
+  if (!chartElement.value) return;
   const currentElement = chartElement.value;
   chart ??= echarts.init(currentElement, undefined, { renderer: "canvas" });
   const currentChart = chart;
@@ -203,7 +369,7 @@ function renderChart() {
   const styles = getComputedStyle(document.documentElement);
   const surface = styles.getPropertyValue("--surface").trim();
   const text = styles.getPropertyValue("--text").trim();
-  const chartEntries = result.value.entries.filter((entry) => entry.logical_size > 0);
+  const chartEntries = visualizationEntries.value;
   const palettes: Record<string, string[]> = {
     pet: ["#8a4f31", "#ad704d", "#cf9b75", "#e2bea1", "#ecd4be", "#f4e3d4"],
     nature: ["#365d43", "#527a5d", "#78a07d", "#a6c0a2", "#c5d6bf", "#e0e9dc"],
@@ -211,7 +377,8 @@ function renderChart() {
   };
   const palette = palettes[currentTheme.value] ?? palettes.pet;
   const option: EChartsOption = {
-    animationDuration: 320,
+    animationDuration: 180,
+    animationDurationUpdate: 180,
     tooltip: {
       confine: true,
       formatter(params: unknown) {
@@ -222,6 +389,7 @@ function renderChart() {
     },
     series: [{
       type: "treemap",
+      universalTransition: true,
       left: 0,
       top: 0,
       right: 0,
@@ -245,6 +413,7 @@ function renderChart() {
       emphasis: { itemStyle: { shadowBlur: 14, shadowColor: "rgba(0,0,0,.14)" } },
       data: chartEntries.map((entry, index) => ({
         ...entry,
+        id: entry.path,
         value: entry.logical_size,
         itemStyle: { color: palette[index % palette.length] },
         label: {
@@ -254,12 +423,14 @@ function renderChart() {
       })),
     }],
   };
-  currentChart.setOption(option, true);
+  currentChart.setOption(option, { notMerge: false, lazyUpdate: false });
   currentChart.off("click");
-  currentChart.on("click", (params) => {
-    const entry = params.data as SpaceMapEntry | undefined;
-    if (entry) void openEntry(entry);
-  });
+  if (!loading.value) {
+    currentChart.on("click", (params) => {
+      const entry = params.data as SpaceMapEntry | undefined;
+      if (entry) void openEntry(entry);
+    });
+  }
 }
 
 function escapeHtml(value: string) {
@@ -269,7 +440,7 @@ function escapeHtml(value: string) {
 }
 
 watch(currentTheme, () => nextTick(renderChart));
-watch(entries, () => nextTick(renderChart));
+watch(visualizationEntries, () => nextTick(renderChart));
 
 onMounted(() => {
   if (chartElement.value) {
@@ -281,10 +452,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   requestSequence += 1;
+  stopProgressPolling();
   if (isNativeRuntime) void invoke("cancel_space_map");
-  resizeObserver?.disconnect();
-  chart?.dispose();
-  chart = null;
+  disposeChart();
 });
 </script>
 
@@ -292,11 +462,20 @@ onBeforeUnmount(() => {
   <section class="space-page" aria-labelledby="space-map-title">
     <header class="space-heading">
       <div>
-        <p class="eyebrow">只读分析 · 不会移动或删除文件</p>
-        <h1 id="space-map-title">看清空间都去了哪里</h1>
-        <p>矩形面积代表目录的逻辑大小。点击文件夹逐层进入，先找到占用，再决定如何处理。</p>
+        <p class="eyebrow">大文件优先 · 不会移动或删除文件</p>
+        <h1 id="space-map-title">快速找到真正占空间的文件</h1>
+        <p>默认忽略小于 {{ thresholdLabel }} 的文件。扫描结果会边发现边填入空间拼图，完成后可以逐层进入目录。</p>
       </div>
       <div class="heading-actions">
+        <label class="threshold-select">
+          <span>大文件标准</span>
+          <select v-model.number="minimumFileSize" :disabled="loading" @change="analyze(result?.root_path, false)">
+            <option :value="50 * 1024 * 1024">≥ 50 MB</option>
+            <option :value="100 * 1024 * 1024">≥ 100 MB</option>
+            <option :value="500 * 1024 * 1024">≥ 500 MB</option>
+            <option :value="1024 * 1024 * 1024">≥ 1 GB</option>
+          </select>
+        </label>
         <button type="button" class="secondary-button" :disabled="loading" @click="analyze(result?.root_path, false)">
           <AppIcon name="refresh" :size="16" /> 重新分析
         </button>
@@ -317,26 +496,52 @@ onBeforeUnmount(() => {
       <span :class="['source-chip', { native: source === 'native' }]">{{ source === "native" ? "本机实时数据" : "界面预览数据" }}</span>
     </div>
 
-    <div v-if="loading" class="analysis-state" aria-live="polite">
-      <span class="analysis-spinner" aria-hidden="true"></span>
-      <div><strong>正在读取目录结构</strong><small>大目录需要一些时间，分析只读取文件元数据。</small></div>
-    </div>
+    <section v-if="loading" class="live-scan" aria-live="polite">
+      <header class="live-scan-head">
+        <div class="live-title"><span class="live-dot"></span><div><strong>正在寻找 ≥ {{ thresholdLabel }} 的大文件</strong><small>{{ progress.current_path || "正在打开扫描范围…" }}</small></div></div>
+        <button type="button" @click="stopAnalysis">停止</button>
+      </header>
+      <div class="live-metrics">
+        <span><small>已检查</small><strong>{{ formatCount(progress.scanned_file_count) }}</strong><em>个文件</em></span>
+        <span><small>已找到</small><strong>{{ formatCount(progress.matched_file_count) }}</strong><em>个大文件</em></span>
+        <span><small>累计大小</small><strong>{{ formatBytes(progress.matched_logical_size) }}</strong><em>持续增加中</em></span>
+        <span><small>用时</small><strong>{{ (progress.elapsed_ms / 1000).toFixed(1) }} 秒</strong><em>最多四路并行</em></span>
+      </div>
+      <div class="live-puzzle">
+        <div v-if="!liveTiles.length" class="puzzle-placeholder" aria-hidden="true">
+          <span v-for="index in 12" :key="index" :style="{ animationDelay: `${index * 45}ms` }"></span>
+        </div>
+        <TransitionGroup v-else name="puzzle-tile" tag="div" class="live-tile-grid" aria-label="扫描中实时填充的大文件空间拼图">
+          <div v-for="(entry, index) in liveTiles" :key="entry.path" :class="['live-tile', `tile-${index + 1}`]">
+            <span>{{ entry.name }}</span><strong>{{ formatBytes(entry.logical_size) }}</strong><small>{{ formatCount(entry.file_count) }} 个大文件</small>
+          </div>
+        </TransitionGroup>
+        <div class="puzzle-caption"><span>每发现一批大文件，拼图就会长出一块</span><strong>{{ visualizationEntries.length }} 个目录已有结果</strong></div>
+      </div>
+    </section>
+
+    <section v-else-if="cancelled && !result" class="stopped-state">
+      <AppIcon name="map" :size="30" />
+      <strong>扫描已停止</strong>
+      <p>还没有生成结果，可以调整大文件标准后重新开始。</p>
+      <button type="button" class="primary-button" @click="analyze(undefined, true)">重新扫描</button>
+    </section>
 
     <template v-else-if="result">
       <section class="summary-strip" aria-label="空间分析摘要">
-        <div><small>逻辑大小</small><strong>{{ formatBytes(result.logical_size) }}</strong><span>用于矩形面积</span></div>
-        <div><small>实际分配</small><strong>{{ formatBytes(result.allocated_size) }}</strong><span>文件系统已分配块</span></div>
-        <div><small>文件与目录</small><strong>{{ formatCount(result.file_count + result.directory_count) }}</strong><span>{{ formatCount(result.file_count) }} 个文件</span></div>
+        <div><small>大文件逻辑大小</small><strong>{{ formatBytes(result.logical_size) }}</strong><span>用于矩形面积</span></div>
+        <div><small>大文件实际分配</small><strong>{{ formatBytes(result.allocated_size) }}</strong><span>文件系统已分配块</span></div>
+        <div><small>找到的大文件</small><strong>{{ formatCount(result.file_count) }}</strong><span>共检查 {{ formatCount(result.scanned_file_count) }} 个文件</span></div>
         <div><small>完成时间</small><strong>{{ (result.scan_duration_ms / 1000).toFixed(1) }} 秒</strong><span>{{ result.entries.length }} 个直接子项</span></div>
       </section>
 
       <section class="map-panel">
         <div class="panel-title">
-          <div><h2>目录占用图</h2><p>逻辑大小越大，矩形面积越大</p></div>
+          <div><h2>大文件空间拼图</h2><p>只统计 ≥ {{ formatThreshold(result.minimum_file_size) }} 的文件，面积越大占用越大</p></div>
           <span>{{ result.display_path }}</span>
         </div>
         <div v-if="result.logical_size > 0" ref="chartElement" class="treemap-chart" role="img" :aria-label="`${result.display_path} 目录占用矩形图`"></div>
-        <div v-else class="empty-map"><AppIcon name="folder" :size="30" /><strong>这个文件夹里没有可统计的普通文件</strong></div>
+        <div v-else class="empty-map"><AppIcon name="folder" :size="30" /><strong>没有找到达到当前标准的大文件</strong></div>
       </section>
 
       <div v-if="result.skipped_items || result.hard_link_duplicates || result.symlink_count || allocationDifference" class="accuracy-note">
@@ -352,7 +557,7 @@ onBeforeUnmount(() => {
 
       <section class="directory-section">
         <header class="directory-toolbar">
-          <div><h2>目录明细</h2><p>列表与上方矩形图使用同一份实时结果</p></div>
+          <div><h2>大文件所在目录</h2><p>已忽略 {{ formatCount(result.ignored_file_count) }} 个小文件，让结果更聚焦</p></div>
           <div class="list-controls">
             <label class="search-field"><AppIcon name="search" :size="15" /><input v-model="query" type="search" placeholder="搜索当前目录"></label>
             <select v-model="sortKey" aria-label="目录排序方式">
@@ -369,7 +574,7 @@ onBeforeUnmount(() => {
           </div>
           <button v-for="entry in entries" :key="entry.path" type="button" class="directory-row" role="row" @click="openEntry(entry)">
             <span class="entry-name" role="cell">
-              <i><AppIcon :name="entry.is_dir ? 'folder' : 'file'" :size="19" /></i>
+              <span class="entry-icon"><AppIcon :name="entry.is_dir ? 'folder' : 'file'" :size="19" /></span>
               <span><strong>{{ entry.name }}</strong><small>{{ formatDate(entry.modified_at) }}<b v-if="entry.is_package">包目录</b><b v-if="entry.is_cloud_placeholder">云占位</b></small></span>
             </span>
             <span class="entry-size" role="cell"><strong>{{ formatBytes(entry.logical_size) }}</strong><small>{{ percentage(entry) }}</small></span>
@@ -381,7 +586,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <p class="method-note">逻辑大小用于比较目录占用；实际分配来自文件系统块数。APFS 克隆、压缩和共享块无法被普通目录遍历精确归属，因此这些数字不代表删除后必然增加的可用空间。</p>
+      <p class="method-note">本次只展示不小于 {{ formatThreshold(result.minimum_file_size) }} 的文件；被忽略的小文件合计 {{ formatBytes(result.ignored_logical_size) }}。逻辑大小用于比较目录占用，APFS 克隆、压缩和共享块仍不代表删除后必然增加的可用空间。</p>
     </template>
   </section>
 </template>
@@ -392,7 +597,10 @@ onBeforeUnmount(() => {
 .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .09em; }
 .space-heading h1 { margin: 0; color: var(--text); font-size: clamp(27px, 3vw, 38px); font-weight: 650; letter-spacing: -.045em; }
 .space-heading p:not(.eyebrow) { max-width: 640px; margin: 9px 0 0; color: var(--text-soft); font-size: 12px; }
-.heading-actions { display: flex; gap: 9px; }
+.heading-actions { display: flex; align-items: center; gap: 9px; }
+.threshold-select { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 5px 0 11px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-faint); background: color-mix(in srgb, var(--surface) 80%, transparent); }
+.threshold-select span { font-size: 9px; font-weight: 750; white-space: nowrap; }
+.threshold-select select { height: 30px; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; font-weight: 700; }
 .primary-button, .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 15px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; font-weight: 700; transition: 150ms ease; }
 .primary-button { border-color: var(--accent); color: #fff; background: var(--accent); }
 .secondary-button { color: var(--text); background: var(--surface); }
@@ -404,12 +612,51 @@ onBeforeUnmount(() => {
 .pathbar button:disabled { cursor: default; color: var(--text-soft); }
 .source-chip { margin-left: auto; padding: 4px 8px; border-radius: 99px; color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); font-size: 9px; font-weight: 800; }
 .source-chip.native { color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
-.analysis-state { display: flex; align-items: center; justify-content: center; gap: 18px; min-height: 470px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
-.analysis-state strong, .analysis-state small { display: block; }
-.analysis-state strong { font-size: 15px; }
-.analysis-state small { margin-top: 4px; color: var(--text-faint); font-size: 11px; }
-.analysis-spinner { width: 42px; height: 42px; border: 4px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.live-scan { overflow: hidden; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-soft); }
+.live-scan-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 19px; border-bottom: 1px solid var(--border); }
+.live-title { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.live-dot { flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent); animation: scan-pulse 1.6s ease-out infinite; }
+.live-title strong, .live-title small { display: block; }
+.live-title strong { font-size: 12px; }
+.live-title small { max-width: 720px; margin-top: 3px; overflow: hidden; color: var(--text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.live-scan-head button { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-soft); background: var(--surface-soft); font-size: 10px; font-weight: 700; }
+.live-metrics { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border); background: var(--surface-soft); }
+.live-metrics > span { padding: 13px 18px; border-right: 1px solid var(--border); }
+.live-metrics > span:last-child { border-right: 0; }
+.live-metrics small, .live-metrics strong, .live-metrics em { display: block; }
+.live-metrics small { color: var(--text-faint); font-size: 9px; font-weight: 750; }
+.live-metrics strong { margin: 3px 0 1px; font-size: 18px; font-style: normal; letter-spacing: -.025em; }
+.live-metrics em { color: var(--text-faint); font-size: 8px; font-style: normal; }
+.live-puzzle { position: relative; min-height: 390px; padding: 17px; }
+.live-tile-grid { display: grid; grid-template-columns: repeat(6, 1fr); grid-template-rows: repeat(4, 82px); gap: 6px; min-height: 346px; }
+.live-tile { display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; padding: 15px; overflow: hidden; border-radius: 9px; color: #fff; background: var(--accent); }
+.live-tile:nth-child(2) { color: #fff; background: color-mix(in srgb, var(--accent) 78%, var(--surface)); }
+.live-tile:nth-child(3) { color: var(--text); background: color-mix(in srgb, var(--accent) 48%, var(--surface)); }
+.live-tile:nth-child(4) { color: var(--text); background: color-mix(in srgb, var(--accent) 30%, var(--surface)); }
+.live-tile:nth-child(n+5) { color: var(--text-soft); background: var(--surface-strong); }
+.live-tile span, .live-tile strong, .live-tile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-tile span { font-size: 10px; font-weight: 750; }
+.live-tile strong { margin-top: 4px; font-size: 18px; letter-spacing: -.025em; }
+.live-tile small { margin-top: 2px; font-size: 8px; opacity: .72; }
+.live-tile.tile-1 { grid-column: span 3; grid-row: span 4; }
+.live-tile.tile-2 { grid-column: span 2; grid-row: span 3; }
+.live-tile.tile-3 { grid-column: span 1; grid-row: span 2; }
+.live-tile.tile-4 { grid-column: span 1; grid-row: span 2; }
+.live-tile.tile-5, .live-tile.tile-6 { grid-column: span 1; grid-row: span 1; }
+.live-tile.tile-7, .live-tile.tile-8 { grid-column: span 2; grid-row: span 1; }
+.puzzle-tile-enter-active { transition: opacity 220ms ease, transform 260ms cubic-bezier(.2,.85,.35,1.15); }
+.puzzle-tile-enter-from { opacity: 0; transform: scale(.72) translateY(12px); }
+.puzzle-placeholder { position: absolute; z-index: 1; inset: 17px 17px 43px; display: grid; grid-template-columns: 1.7fr 1.05fr .75fr; grid-template-rows: 1fr .72fr; gap: 6px; }
+.puzzle-placeholder > span { border-radius: 9px; background: var(--surface-strong); animation: tile-breathe 1.25s ease-in-out infinite alternate; }
+.puzzle-placeholder > span:nth-child(n+7) { display: none; }
+.puzzle-placeholder > span:first-child { grid-row: 1 / 3; }
+.puzzle-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 3px 0; color: var(--text-faint); font-size: 9px; }
+.puzzle-caption strong { color: var(--accent-strong); font-size: 9px; }
+.stopped-state { display: grid; place-items: center; min-height: 360px; padding: 40px; border: 1px solid var(--border); border-radius: 18px; color: var(--text-faint); background: var(--surface); text-align: center; }
+.stopped-state > strong { margin-top: 12px; color: var(--text); font-size: 15px; }
+.stopped-state p { margin: 5px 0 18px; font-size: 10px; }
+@keyframes scan-pulse { 65%, 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes tile-breathe { from { opacity: .45; transform: scale(.985); } to { opacity: .92; transform: scale(1); } }
 .summary-strip { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); box-shadow: var(--shadow-soft); }
 .summary-strip > div { min-width: 0; padding: 16px 18px; border-right: 1px solid var(--border); }
 .summary-strip > div:last-child { border-right: 0; }
@@ -445,7 +692,7 @@ button.directory-row:hover { background: var(--surface-soft); }
 .directory-row:last-of-type { border-bottom: 0; }
 .table-head { min-height: 36px; color: var(--text-faint); background: var(--surface-soft); font-size: 9px; font-weight: 800; letter-spacing: .035em; }
 .entry-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.entry-name > i { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }
+.entry-icon { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }
 .entry-name > span { min-width: 0; }
 .entry-name strong, .entry-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entry-name strong { font-size: 11px; }
@@ -459,7 +706,9 @@ button.directory-row:hover { background: var(--surface-soft); }
 .no-results { padding: 42px; color: var(--text-faint); text-align: center; font-size: 11px; }
 .method-note { max-width: 850px; margin: 16px auto 0; color: var(--text-faint); font-size: 9px; line-height: 1.65; text-align: center; }
 @media (max-width: 1080px) {
-  .space-heading { align-items: flex-start; }
+  .space-heading { align-items: flex-start; flex-wrap: wrap; }
+  .heading-actions { width: 100%; }
+  .threshold-select { margin-right: auto; }
   .summary-strip { grid-template-columns: repeat(2, 1fr); }
   .summary-strip > div:nth-child(2) { border-right: 0; }
   .summary-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--border); }

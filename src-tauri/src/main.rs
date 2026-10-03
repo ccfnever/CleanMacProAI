@@ -40,6 +40,7 @@ fn main() {
             commands::system::open_in_finder,
             commands::system::request_permissions,
             commands::space_map::analyze_space_map,
+            commands::space_map::get_space_map_progress,
             commands::space_map::cancel_space_map,
             commands::space_map::choose_space_map_directory,
         ])

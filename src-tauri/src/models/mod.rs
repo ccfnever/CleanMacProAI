@@ -135,6 +135,14 @@ pub struct SpaceMapResult {
     pub file_count: u64,
     /// 成功遍历的目录数（不含分析根目录）
     pub directory_count: u64,
+    /// 本次检查过的普通文件总数（包含被阈值忽略的小文件）
+    pub scanned_file_count: u64,
+    /// 小于阈值、未进入空间地图的文件数
+    pub ignored_file_count: u64,
+    /// 被阈值忽略的小文件逻辑大小合计
+    pub ignored_logical_size: u64,
+    /// 纳入结果的最小文件大小
+    pub minimum_file_size: u64,
     /// 根目录的直接子项，包含其递归汇总值
     pub entries: Vec<SpaceMapEntry>,
     /// 因权限、并发删除或 I/O 错误无法读取的条目数
@@ -145,6 +153,27 @@ pub struct SpaceMapResult {
     pub symlink_count: u64,
     /// 分析耗时（毫秒）
     pub scan_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpaceMapProgress {
+    pub is_scanning: bool,
+    pub root_path: String,
+    pub display_path: String,
+    pub current_path: Option<String>,
+    pub minimum_file_size: u64,
+    pub scanned_file_count: u64,
+    pub scanned_directory_count: u64,
+    pub matched_file_count: u64,
+    pub matched_logical_size: u64,
+    pub matched_allocated_size: u64,
+    pub ignored_file_count: u64,
+    pub ignored_logical_size: u64,
+    pub skipped_items: u64,
+    pub hard_link_duplicates: u64,
+    pub symlink_count: u64,
+    pub entries: Vec<SpaceMapEntry>,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
