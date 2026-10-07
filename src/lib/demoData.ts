@@ -40,6 +40,7 @@ export interface InstalledApp {
   name: string;
   bundle_id: string;
   app_path: string;
+  last_opened_at?: number | null;
   icon_path?: string;
   icon_data_url?: string;
   app_size: number;

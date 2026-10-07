@@ -6,9 +6,8 @@ use plist::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-const MAX_RELATED_PREVIEW_FILES: usize = 24;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 #[tauri::command]
 pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
@@ -18,11 +17,10 @@ pub async fn list_installed_apps() -> Result<Vec<InstalledApp>, String> {
 }
 
 fn list_installed_apps_blocking() -> Result<Vec<InstalledApp>, String> {
-    let mut roots = vec![PathBuf::from("/Applications")];
-    if let Some(home) = dirs::home_dir() {
-        roots.push(home.join("Applications"));
-    }
+    list_apps_from_roots(application_roots())
+}
 
+fn list_apps_from_roots(roots: Vec<PathBuf>) -> Result<Vec<InstalledApp>, String> {
     let mut apps = Vec::new();
     let mut seen_paths = HashSet::new();
     for root in roots {
@@ -36,7 +34,7 @@ fn list_installed_apps_blocking() -> Result<Vec<InstalledApp>, String> {
 
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("app") {
+            if !is_visible_app_bundle(&path) {
                 continue;
             }
 
@@ -52,6 +50,12 @@ fn list_installed_apps_blocking() -> Result<Vec<InstalledApp>, String> {
 
     apps.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     Ok(apps)
+}
+
+fn is_visible_app_bundle(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("app")
+        && path.file_name().and_then(|name| name.to_str())
+            .is_some_and(|name| !name.starts_with('.'))
 }
 
 #[tauri::command]
@@ -186,7 +190,7 @@ fn find_app_by_bundle_id(bundle_id: &str, include_details: bool) -> Option<Insta
         .filter_map(|root| fs::read_dir(root).ok())
         .flat_map(|entries| entries.filter_map(Result::ok))
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("app"))
+        .filter(|path| is_visible_app_bundle(path))
         .filter_map(|path| read_app_bundle(&path, include_details))
         .find(|app| app.bundle_id == bundle_id)
 }
@@ -232,13 +236,16 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
         }
     };
     let app_path = path.to_string_lossy().to_string();
-    let icon = app_icon_asset(path, &bundle_id, dictionary);
+    // The initial list must not launch Spotlight or image-conversion processes.
+    // These are enriched one app at a time after the list is already visible.
+    let icon = if include_details { app_icon_asset(path, &bundle_id, dictionary) } else { None };
     let is_system_app = app_path.starts_with("/System/");
 
     Some(InstalledApp {
         name,
         bundle_id,
         app_path,
+        last_opened_at: if include_details { app_last_opened_at(path) } else { None },
         icon_path: icon.as_ref().map(|asset| asset.path.clone()),
         icon_data_url: icon.and_then(|asset| asset.data_url),
         app_size,
@@ -247,6 +254,38 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
         related_files: related.preview_files,
         is_system_app,
     })
+}
+
+fn app_last_opened_at(path: &Path) -> Option<i64> {
+    let output = command_output_with_timeout(Command::new("/usr/bin/mdls")
+        .args(["-raw", "-name", "kMDItemLastUsedDate"])
+        .arg(path), Duration::from_millis(500))?;
+    if !output.status.success() { return None; }
+    parse_last_opened_at(&String::from_utf8(output.stdout).ok()?)
+}
+
+fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Option<Output> {
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+fn parse_last_opened_at(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_str(value.trim().trim_matches('"'), "%Y-%m-%d %H:%M:%S %z")
+        .ok()
+        .map(|date| date.timestamp())
 }
 
 struct IconAsset {
@@ -307,22 +346,20 @@ fn convert_icns_to_png(source: &Path, bundle_id: &str) -> Option<PathBuf> {
     fs::create_dir_all(&cache_root).ok()?;
 
     let file_name = format!("{}.png", safe_file_stem(bundle_id));
-    let output = cache_root.join(file_name);
+    let output_path = cache_root.join(file_name);
 
-    if output.exists() {
-        return Some(output);
+    if output_path.exists() {
+        return Some(output_path);
     }
 
-    let status = Command::new("sips")
+    let output = command_output_with_timeout(Command::new("sips")
         .args(["-s", "format", "png"])
         .arg(source)
         .arg("--out")
-        .arg(&output)
-        .status()
-        .ok()?;
+        .arg(&output_path), Duration::from_secs(2))?;
 
-    if status.success() && output.exists() {
-        Some(output)
+    if output.status.success() && output_path.exists() {
+        Some(output_path)
     } else {
         None
     }
@@ -411,18 +448,16 @@ fn related_app_data(name: &str, bundle_id: &str) -> RelatedAppData {
         total_size += size;
         total_count += count;
 
-        if preview_files.len() < MAX_RELATED_PREVIEW_FILES {
-            preview_files.push(FileInfo {
-                path: display_path(&path),
-                size,
-                modified_at: fs::metadata(&path)
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok())
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_secs().to_string()),
-                is_dir: path.is_dir(),
-            });
-        }
+        preview_files.push(FileInfo {
+            path: display_path(&path),
+            size,
+            modified_at: fs::metadata(&path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs().to_string()),
+            is_dir: path.is_dir(),
+        });
     }
 
     RelatedAppData {
@@ -487,15 +522,26 @@ fn normalize_match_text(value: &str) -> String {
 }
 
 fn path_size(path: &Path) -> u64 {
-    if path.is_file() {
-        return fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-    }
-
-    if !path.is_dir() {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_symlink() {
         return 0;
     }
-
-    du_size(path).unwrap_or(0)
+    if metadata.is_file() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            return metadata.blocks().saturating_mul(512);
+        }
+        #[cfg(not(unix))]
+        return metadata.len();
+    }
+    if metadata.is_dir() {
+        du_size(path).unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 fn du_size(path: &Path) -> Option<u64> {
@@ -563,6 +609,66 @@ fn is_safe_uninstall_target(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_list_returns_before_detail_enrichment() {
+        let started = Instant::now();
+        let apps = list_installed_apps_blocking().unwrap();
+        println!("Quick application list: {} apps in {:?}", apps.len(), started.elapsed());
+        assert!(apps.iter().all(|app| app.icon_data_url.is_none()
+            && app.last_opened_at.is_none() && app.app_size == 0 && app.related_size == 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_command_timeout_does_not_block_detail_queue() {
+        assert!(command_output_with_timeout(Command::new("/bin/sleep").arg("2"),
+            Duration::from_millis(30)).is_none());
+        let output = command_output_with_timeout(Command::new("/usr/bin/printf").arg("ok"),
+            Duration::from_secs(1)).unwrap();
+        assert_eq!(output.stdout, b"ok");
+    }
+
+    #[test]
+    fn parses_spotlight_last_opened_date_without_inventing_missing_dates() {
+        assert_eq!(parse_last_opened_at("2026-10-07 11:48:06 +0000"),
+            parse_last_opened_at("2026-10-07 19:48:06 +0800"));
+        assert!(parse_last_opened_at("2026-10-07 11:48:06 +0000").is_some());
+        assert_eq!(parse_last_opened_at("(null)"), None);
+        assert_eq!(parse_last_opened_at("not a date"), None);
+    }
+
+    #[test]
+    fn lists_visible_copies_by_path_without_hidden_backups() {
+        let root = std::env::temp_dir().join(format!("cleanmac-app-list-{}", std::process::id()));
+        for name in ["Archive.app", "Archive copy.app", ".Archive-backup.app"] {
+            let contents = root.join(name).join("Contents");
+            fs::create_dir_all(&contents).unwrap();
+            fs::write(contents.join("Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleName</key><string>Archive</string><key>CFBundleIdentifier</key><string>test.archive</string></dict></plist>"#).unwrap();
+        }
+        let apps = list_apps_from_roots(vec![root.clone()]).unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_ne!(apps[0].app_path, apps[1].app_path);
+        assert!(apps.iter().all(|app| app.bundle_id == "test.archive"));
+        assert!(apps.iter().all(|app| !app.app_path.contains(".Archive-backup")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standalone_files_use_allocated_size_and_do_not_follow_symlinks() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("cleanmac-app-size-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = fs::File::create(root.join("sparse")).unwrap();
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        let metadata = file.metadata().unwrap();
+        assert_eq!(path_size(&root.join("sparse")), metadata.blocks() * 512);
+        assert!(path_size(&root.join("sparse")) < metadata.len());
+        std::os::unix::fs::symlink(root.join("sparse"), root.join("link")).unwrap();
+        assert_eq!(path_size(&root.join("link")), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn path_size_reports_existing_application_bundle() {

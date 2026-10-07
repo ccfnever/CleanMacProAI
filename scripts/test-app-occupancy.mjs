@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import ts from "typescript";
+const source = await readFile(new URL("../src/lib/appOccupancy.ts", import.meta.url), "utf8");
+const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
+const { uniqueAppsTotalSize, compareApps, formatLastOpened } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const shared = { path: "~/Library/Containers/test.archive", size: 5000 };
+const app = { app_path: "/Applications/Archive.app", bundle_id: "test.archive", app_size: 50, related_size: 5000, related_files: [shared] };
+const copy = { ...app, app_path: "/Applications/Archive copy.app", app_size: 60 };
+assert.equal(uniqueAppsTotalSize([app, copy]), 5110); // count each binary, shared data once
+assert.equal(uniqueAppsTotalSize([app, app]), 5050);
+assert.equal(uniqueAppsTotalSize([{ ...app, related_files: [shared, { path: `${shared.path}/Data/Cache`, size: 1000 }] }]), 5050);
+assert.equal(uniqueAppsTotalSize([{ ...app, related_files: [shared, { path: `${shared.path}-other`, size: 1000 }] }]), 6050);
+const many = Array.from({ length: 30 }, (_, i) => ({ path: `~/Library/Caches/test.archive.${i}`, size: 1 }));
+assert.equal(uniqueAppsTotalSize([{ ...app, related_size: 30, related_files: many }]), 80);
+const smallRecent = { ...app, name: "A", app_size: 10, related_size: 20, last_opened_at: 200 };
+const largeOld = { ...copy, name: "B", app_size: 20, related_size: 5000, last_opened_at: 100 };
+const unknown = { ...app, name: "C", app_size: 50, related_size: 0, last_opened_at: null };
+const items = [unknown, smallRecent, largeOld];
+assert.deepEqual([...items].sort((a, b) => compareApps(a, b, "size")).map((app) => app.name), ["B", "C", "A"]);
+assert.deepEqual([...items].sort((a, b) => compareApps(a, b, "opened")).map((app) => app.name), ["A", "B", "C"]);
+assert.deepEqual([...items].sort((a, b) => compareApps(a, b, "name")).map((app) => app.name), ["A", "B", "C"]);
+assert.equal(compareApps(unknown, unknown, "opened"), 0);
+assert.equal(formatLastOpened(null), "暂无打开记录");
+assert.equal(formatLastOpened(undefined), "暂无打开记录");
+assert.match(formatLastOpened(1791373686), /2026/);
+console.log("Passed: distinct application copies, shared container deduplication, parent/child overlap, path prefix safety and more than 24 related entries.");
+console.log("Passed: disk occupancy, recent opening and name sorting; missing usage records stay last and display accurately.");

@@ -8,6 +8,7 @@ import {
   type InstalledApp,
 } from "../lib/demoData";
 import AppIcon from "../components/AppIcon.vue";
+import { compareApps, formatLastOpened, uniqueAppsTotalSize, type AppSort } from "../lib/appOccupancy";
 
 type FacetKind = "status" | "source" | "platform" | "vendor";
 type FileGroupId =
@@ -37,14 +38,15 @@ interface RelatedGroup {
 
 const apps = ref<InstalledApp[]>([]);
 const isLoading = ref(true);
-const inspectingBundleId = ref<string | null>(null);
+const inspectingAppPath = ref<string | null>(null);
 const isUninstalling = ref(false);
 const isConfirmingUninstall = ref(false);
 const query = ref("");
+const sortBy = ref<AppSort>("size");
 const activeFacet = ref("status:all");
-const selectedBundleIds = ref<Set<string>>(new Set());
+const selectedAppPaths = ref<Set<string>>(new Set());
 const failedIconPaths = ref<Set<string>>(new Set());
-const expandedBundleIds = ref<Set<string>>(new Set());
+const expandedAppPaths = ref<Set<string>>(new Set());
 const isAutoScanning = ref(false);
 const autoScanCompletedCount = ref(0);
 const notice = ref<string | null>(null);
@@ -65,11 +67,11 @@ const filteredApps = computed(() => {
         app.app_path.toLowerCase().includes(keyword)
       );
     })
-    .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    .sort((a, b) => compareApps(a, b, sortBy.value));
 });
 
 const selectedApps = computed(() =>
-  apps.value.filter((app) => selectedBundleIds.value.has(app.bundle_id)),
+  apps.value.filter((app) => selectedAppPaths.value.has(app.app_path)),
 );
 
 const selectedTotal = computed(() => uniqueAppsTotalSize(selectedApps.value));
@@ -105,7 +107,7 @@ const facetSections = computed(() => {
         { id: "status:unused", label: "未使用", kind: "status" as const, count: unusedApps.value.length },
         { id: "status:leftovers", label: "残留项", kind: "status" as const, count: leftoverApps.value.length },
         { id: "status:suspicious", label: "可疑项", kind: "status" as const, count: suspiciousApps.value.length },
-        { id: "status:selected", label: "已选中", kind: "status" as const, count: selectedBundleIds.value.size },
+        { id: "status:selected", label: "已选中", kind: "status" as const, count: selectedAppPaths.value.size },
       ],
     },
     {
@@ -134,33 +136,14 @@ const suspiciousApps = computed(() =>
   apps.value.filter((app) => app.bundle_id.includes("helper") || app.bundle_id.includes("virtual")),
 );
 
-const isInspecting = computed(() => (bundleId: string) => inspectingBundleId.value === bundleId);
+const isInspecting = computed(() => (appPath: string) => inspectingAppPath.value === appPath);
 
 function appTotalSize(app: InstalledApp): number {
   return app.app_size + app.related_size;
 }
 
-function uniqueAppsTotalSize(appList: InstalledApp[]): number {
-  const relatedPaths = new Set<string>();
-  let total = appList.reduce((sum, app) => sum + app.app_size, 0);
-
-  for (const app of appList) {
-    if (app.related_files.length === 0) {
-      total += app.related_size;
-      continue;
-    }
-    for (const file of app.related_files) {
-      const path = normalizePath(file.path);
-      if (relatedPaths.has(path)) continue;
-      relatedPaths.add(path);
-      total += file.size;
-    }
-  }
-  return total;
-}
-
 function appSizeLabel(app: InstalledApp): string {
-  if (isInspecting.value(app.bundle_id)) return "统计中...";
+  if (isInspecting.value(app.app_path)) return "统计中...";
   const size = appTotalSize(app);
   return size > 0 ? formatBytes(size) : "待统计";
 }
@@ -210,12 +193,12 @@ function matchesFacet(app: InstalledApp, facet: string): boolean {
   const [kind, value] = facet.split(":");
   if (kind === "status") {
     if (value === "all") return true;
-    if (value === "unused") return unusedApps.value.some((item) => item.bundle_id === app.bundle_id);
+    if (value === "unused") return unusedApps.value.some((item) => item.app_path === app.app_path);
     if (value === "leftovers") return app.related_size > 0;
     if (value === "suspicious") {
-      return suspiciousApps.value.some((item) => item.bundle_id === app.bundle_id);
+      return suspiciousApps.value.some((item) => item.app_path === app.app_path);
     }
-    if (value === "selected") return selectedBundleIds.value.has(app.bundle_id);
+    if (value === "selected") return selectedAppPaths.value.has(app.app_path);
   }
   if (kind === "source") return appSource(app) === value;
   if (kind === "platform") return appPlatform(app) === value;
@@ -240,7 +223,7 @@ function fileGroups(app: InstalledApp): RelatedGroup[] {
       "binary",
       {
         id: "binary",
-        label: "二进制文件",
+        label: "应用本体",
         files: [{ path: app.app_path, size: app.app_size }],
         size: app.app_size,
       },
@@ -280,7 +263,7 @@ function groupIcon(groupId: FileGroupId): string {
 
 onMounted(async () => {
   document.addEventListener("keydown", handleDialogKeydown);
-  const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", [], undefined, 5000);
+  const result = await invokeOrDemo<InstalledApp[]>("list_installed_apps", [], undefined, 15000);
   if (result.source === "error") {
     notice.value = `无法读取应用列表：${result.error}`;
     isLoading.value = false;
@@ -294,8 +277,8 @@ onMounted(async () => {
   }
   apps.value = result.data;
   dataSource.value = "native";
-  selectedBundleIds.value = new Set();
-  expandedBundleIds.value = new Set();
+  selectedAppPaths.value = new Set();
+  expandedAppPaths.value = new Set();
   notice.value = result.source === "empty" ? "没有找到可卸载的应用。" : null;
   isLoading.value = false;
   void scanAppsInDisplayOrder(result.data);
@@ -314,7 +297,7 @@ async function scanAppsInDisplayOrder(appList: InstalledApp[]) {
   try {
     for (const app of queue) {
       if (isUnmounted) return;
-      await inspectApp(app.bundle_id);
+      await inspectApp(app.app_path);
       if (isUnmounted) return;
       autoScanCompletedCount.value += 1;
     }
@@ -323,49 +306,49 @@ async function scanAppsInDisplayOrder(appList: InstalledApp[]) {
   }
 }
 
-async function inspectApp(bundleId: string) {
-  if (!bundleId) return null;
+async function inspectApp(appPath: string) {
+  if (!appPath) return null;
 
-  const pending = inspectionPromises.get(bundleId);
+  const pending = inspectionPromises.get(appPath);
   if (pending) return pending;
 
-  const request = inspectAppOnce(bundleId);
-  inspectionPromises.set(bundleId, request);
+  const request = inspectAppOnce(appPath);
+  inspectionPromises.set(appPath, request);
   try {
     return await request;
   } finally {
-    if (inspectionPromises.get(bundleId) === request) {
-      inspectionPromises.delete(bundleId);
+    if (inspectionPromises.get(appPath) === request) {
+      inspectionPromises.delete(appPath);
     }
   }
 }
 
-async function inspectAppOnce(bundleId: string) {
+async function inspectAppOnce(appPath: string) {
 
-  const current = apps.value.find((app) => app.bundle_id === bundleId);
+  const current = apps.value.find((app) => app.app_path === appPath);
   if (!current || current.related_files.length > 0 || current.app_size > 0) return current ?? null;
 
-  inspectingBundleId.value = bundleId;
+  inspectingAppPath.value = appPath;
   const result = await invokeOrDemo<InstalledApp>(
     "inspect_installed_app",
     current,
     {
-      bundleId,
+      bundleId: current.bundle_id,
       appPath: current.app_path,
     },
   );
 
   if (result.source === "error") {
     notice.value = `无法读取 ${current.name} 的详情：${result.error}`;
-    if (inspectingBundleId.value === bundleId) inspectingBundleId.value = null;
+    if (inspectingAppPath.value === appPath) inspectingAppPath.value = null;
     return null;
   }
-  apps.value = apps.value.map((app) => (app.bundle_id === bundleId ? result.data : app));
+  apps.value = apps.value.map((app) => (app.app_path === appPath ? result.data : app));
   if (result.source === "demo") {
     notice.value = "当前环境无法读取该应用详情，已保留快速列表数据。";
   }
-  if (inspectingBundleId.value === bundleId) {
-    inspectingBundleId.value = null;
+  if (inspectingAppPath.value === appPath) {
+    inspectingAppPath.value = null;
   }
   return result.data;
 }
@@ -375,24 +358,24 @@ function setFacet(item: FacetItem) {
 }
 
 function toggleExpanded(app: InstalledApp) {
-  const next = new Set(expandedBundleIds.value);
-  if (next.has(app.bundle_id)) {
-    next.delete(app.bundle_id);
+  const next = new Set(expandedAppPaths.value);
+  if (next.has(app.app_path)) {
+    next.delete(app.app_path);
   } else {
-    next.add(app.bundle_id);
-    void inspectApp(app.bundle_id);
+    next.add(app.app_path);
+    void inspectApp(app.app_path);
   }
-  expandedBundleIds.value = next;
+  expandedAppPaths.value = next;
 }
 
-function toggleSelected(bundleId: string) {
-  const next = new Set(selectedBundleIds.value);
-  if (next.has(bundleId)) {
-    next.delete(bundleId);
+function toggleSelected(appPath: string) {
+  const next = new Set(selectedAppPaths.value);
+  if (next.has(appPath)) {
+    next.delete(appPath);
   } else {
-    next.add(bundleId);
+    next.add(appPath);
   }
-  selectedBundleIds.value = next;
+  selectedAppPaths.value = next;
   uninstallReport.value = null;
 }
 
@@ -404,9 +387,9 @@ async function openAppDirectory(app: InstalledApp) {
 }
 
 function selectAllVisible() {
-  const next = new Set(selectedBundleIds.value);
-  for (const app of filteredApps.value) next.add(app.bundle_id);
-  selectedBundleIds.value = next;
+  const next = new Set(selectedAppPaths.value);
+  for (const app of filteredApps.value) next.add(app.app_path);
+  selectedAppPaths.value = next;
 }
 
 async function uninstallSelected() {
@@ -432,12 +415,12 @@ async function uninstallSelected() {
         appPath: app.app_path,
       });
       if (result.source === "error") {
-        failedIds.add(app.bundle_id);
+        failedIds.add(app.app_path);
         failedDetails.push(`${app.name}（${result.error}）`);
         continue;
       }
       if (result.source !== "native") {
-        failedIds.add(app.bundle_id);
+        failedIds.add(app.app_path);
         failedDetails.push(`${app.name}（演示模式未执行）`);
         continue;
       }
@@ -445,11 +428,11 @@ async function uninstallSelected() {
         (error) => normalizePath(error.path) === normalizePath(app.app_path),
       );
       if (appRemovalError) {
-        failedIds.add(app.bundle_id);
+        failedIds.add(app.app_path);
         failedDetails.push(`${app.name}（${appRemovalError.reason}）`);
         continue;
       }
-      removedIds.add(app.bundle_id);
+      removedIds.add(app.app_path);
       aggregate.cleaned_count += result.data.cleaned_count;
       aggregate.freed_bytes += result.data.freed_bytes;
       aggregate.skipped_count += result.data.skipped_count;
@@ -458,11 +441,11 @@ async function uninstallSelected() {
 
     if (removedIds.size > 0) {
       uninstallReport.value = aggregate;
-      apps.value = apps.value.filter((item) => !removedIds.has(item.bundle_id));
+      apps.value = apps.value.filter((item) => !removedIds.has(item.app_path));
     }
-    selectedBundleIds.value = failedIds;
-    expandedBundleIds.value = new Set(
-      [...expandedBundleIds.value].filter((bundleId) => !removedIds.has(bundleId)),
+    selectedAppPaths.value = failedIds;
+    expandedAppPaths.value = new Set(
+      [...expandedAppPaths.value].filter((appPath) => !removedIds.has(appPath)),
     );
 
     if (removedIds.size === targets.length && aggregate.errors.length === 0) {
@@ -523,7 +506,7 @@ function normalizePath(path: string): string {
           <div>
             <p class="section-kicker">应用与关联文件</p>
             <h1>卸载之前，先把它留下的东西看清楚。</h1>
-            <p>点开任意一行即可在表格内查看应用本体、缓存、偏好设置与其他关联文件。</p>
+            <p>总占用包含应用本体与关联数据；展开可查看缓存、容器和用户数据的具体来源。</p>
           </div>
           <div class="apps-head-actions">
             <label class="search-box">
@@ -541,7 +524,13 @@ function normalizePath(path: string): string {
             {{ filteredApps.length }} 个应用程序{{ listSizeLabel }}{{ scanProgressLabel }}
             <span v-if="isAutoScanning" class="scan-spinner" aria-label="正在统计"></span>
           </span>
-          <button type="button">排序方式按 名称⌄</button>
+          <label class="app-sort">排序方式
+            <select v-model="sortBy" aria-label="应用排序方式">
+              <option value="size">占用大小 · 从大到小</option>
+              <option value="opened">上次打开 · 最近优先</option>
+              <option value="name">名称 · A–Z</option>
+            </select>
+          </label>
         </div>
 
         <div v-if="isLoading" class="loading-state">正在读取应用列表...</div>
@@ -549,19 +538,19 @@ function normalizePath(path: string): string {
         <div v-else class="app-tree">
           <article
             v-for="app in filteredApps"
-            :key="app.bundle_id"
-            :class="['app-node', { expanded: expandedBundleIds.has(app.bundle_id) }]"
+            :key="app.app_path"
+            :class="['app-node', { expanded: expandedAppPaths.has(app.app_path) }]"
           >
             <div class="app-main">
               <button
                 type="button"
-                :class="['selection-dot', { checked: selectedBundleIds.has(app.bundle_id) }]"
+                :class="['selection-dot', { checked: selectedAppPaths.has(app.app_path) }]"
                 :aria-label="`选择 ${app.name}`"
-                @click="toggleSelected(app.bundle_id)"
+                @click="toggleSelected(app.app_path)"
               >
                 <span>✓</span>
               </button>
-              <button type="button" class="expand-hit" @click="toggleExpanded(app)">
+              <button type="button" class="expand-hit" :title="app.app_path" @click="toggleExpanded(app)">
                 <span class="app-icon-wrap">
                   <img
                     v-if="appIconSrc(app)"
@@ -581,10 +570,14 @@ function normalizePath(path: string): string {
                 <span class="app-identity">
                   <strong>{{ app.name }}</strong>
                   <small>{{ appVendor(app) }} · {{ app.bundle_id }}</small>
+                  <small>上次打开：{{ formatLastOpened(app.last_opened_at) }}</small>
                 </span>
               </button>
-              <span class="chevron">{{ expandedBundleIds.has(app.bundle_id) ? "⌄" : "›" }}</span>
-              <strong class="row-size">{{ appSizeLabel(app) }}</strong>
+              <span class="chevron">{{ expandedAppPaths.has(app.app_path) ? "⌄" : "›" }}</span>
+              <div class="row-size" :title="app.app_path">
+                <strong>{{ appSizeLabel(app) }}<small v-if="appTotalSize(app) > 0"> 总占用</small></strong>
+                <small v-if="appTotalSize(app) > 0">本体 {{ formatBytes(app.app_size) }} · 数据 {{ formatBytes(app.related_size) }}</small>
+              </div>
               <button
                 type="button"
                 class="open-app-button"
@@ -596,7 +589,7 @@ function normalizePath(path: string): string {
               </button>
             </div>
 
-            <div v-if="expandedBundleIds.has(app.bundle_id)" class="file-tree">
+            <div v-if="expandedAppPaths.has(app.app_path)" class="file-tree">
               <section v-for="group in fileGroups(app)" :key="group.id" class="file-group">
                 <div class="group-row">
                   <span class="group-icon">{{ groupIcon(group.id) }}</span>
@@ -622,10 +615,10 @@ function normalizePath(path: string): string {
     <footer :class="['bottom-bar', { confirming: isConfirmingUninstall }]">
       <template v-if="!isConfirmingUninstall">
         <div class="selection-summary">
-          <strong>{{ selectedBundleIds.size }} 个应用</strong>
+          <strong>{{ selectedAppPaths.size }} 个应用</strong>
           <span>{{ selectedTotal > 0 ? `预计释放 ${formatBytes(selectedTotal)}` : "勾选应用后可继续" }}</span>
         </div>
-        <button type="button" class="uninstall-orb" :title="dataSource !== 'native' ? '请在 macOS 桌面应用中执行卸载' : undefined" :disabled="selectedBundleIds.size === 0 || isUninstalling || dataSource !== 'native'" @click="requestUninstall">
+        <button type="button" class="uninstall-orb" :title="dataSource !== 'native' ? '请在 macOS 桌面应用中执行卸载' : undefined" :disabled="selectedAppPaths.size === 0 || isUninstalling || dataSource !== 'native'" @click="requestUninstall">
           <AppIcon name="trash" :size="16" /> {{ isUninstalling ? "卸载中" : "准备卸载" }}
         </button>
       </template>
@@ -1307,7 +1300,7 @@ function normalizePath(path: string): string {
 .app-node { border-bottom-color: var(--border); }
 .app-node:last-child { border-bottom: 0; }
 .app-node.expanded { background: color-mix(in srgb, var(--accent-soft) 18%, var(--surface)); }
-.app-main { grid-template-columns: 25px minmax(0, 1fr) 18px 88px 34px; min-height: 56px; padding: 6px 13px; color: var(--text); }
+.app-main { grid-template-columns: 25px minmax(0, 1fr) 18px 175px 34px; min-height: 56px; padding: 6px 13px; color: var(--text); }
 .expand-hit { gap: 10px; color: var(--text); }
 .app-icon-wrap, .app-icon, .app-logo { width: 34px; height: 34px; border-radius: 9px; }
 .app-identity { display: block; min-width: 0; }
@@ -1369,4 +1362,10 @@ function normalizePath(path: string): string {
   .search-box { flex: 1; width: auto; }
   .bottom-bar, .report-panel { width: calc(100% - 162px); }
 }
+
+.row-size { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.row-size > strong { color: var(--text-soft); font-size: 12px; }
+.row-size small { color: var(--text-faint); font-size: 9px; font-weight: 400; white-space: nowrap; }
+.app-sort { display: flex; align-items: center; gap: 7px; color: var(--text-soft); font-size: 10px; }
+.app-sort select { padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface); font-size: 10px; }
 </style>

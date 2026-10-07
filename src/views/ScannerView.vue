@@ -167,7 +167,7 @@ async function openFolder(path: string) {
           <p>
             释放 {{ formatBytes(cleanReport.freed_bytes) }}，处理
             {{ cleanReport.cleaned_count.toLocaleString() }} 个文件，跳过 {{ cleanReport.skipped_count }} 个。
-            项目已移入废纸篓。
+            已清理的项目已直接删除。
           </p>
         </div>
       </div>
@@ -330,7 +330,7 @@ async function openFolder(path: string) {
           </div>
         </div>
         <div class="selection-actions">
-          <span><AppIcon name="shield" :size="13" /> 默认不碰个人数据</span>
+          <span><AppIcon name="shield" :size="13" /> 已选项目将直接删除，不进入废纸篓</span>
           <button
             type="button"
             class="primary-action"

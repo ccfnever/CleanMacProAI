@@ -83,7 +83,7 @@ const themeGreeting = computed(() => ({
       </article>
       <article>
         <span><AppIcon name="trash" :size="19" /></span>
-        <div><strong>优先移入废纸篓</strong><p>已支持的清理动作保留恢复余地，也会明确显示执行结果。</p></div>
+        <div><strong>按操作明确处理</strong><p>安心清理直接删除已选项目；空间地图与应用卸载移入废纸篓。</p></div>
       </article>
     </section>
   </section>

@@ -87,6 +87,9 @@ pub struct InstalledApp {
     pub bundle_id: String,
     /// 应用路径
     pub app_path: String,
+    /// Spotlight 记录的上次打开时间（Unix 秒）；缺失表示没有可读取的记录
+    #[serde(default)]
+    pub last_opened_at: Option<i64>,
     /// 应用图标路径（用于调试/兜底）
     pub icon_path: Option<String>,
     /// 应用图标 data URL，前端可直接作为 img src 使用

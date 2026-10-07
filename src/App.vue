@@ -7,16 +7,15 @@ import DashboardView from "./views/DashboardView.vue";
 import ScannerView from "./views/ScannerView.vue";
 import UninstallerView from "./views/UninstallerView.vue";
 import SettingsView from "./views/SettingsView.vue";
-import { demoDiskInfo, invokeOrDemo, type DiskInfo } from "./lib/demoData";
+import { useDiskStore } from "./stores/disk";
 import { useThemeStore, type ThemeName } from "./stores/theme";
 
 type ViewName = "dashboard" | "scanner" | "space-map" | "uninstaller" | "settings";
 
 const currentView = ref<ViewName>("dashboard");
 const SpaceMapView = defineAsyncComponent(() => import("./views/SpaceMapView.vue"));
-const diskInfo = ref<DiskInfo>(demoDiskInfo);
-const dataSource = ref<"native" | "demo">("demo");
-const diskNotice = ref<string | null>(null);
+const diskStore = useDiskStore();
+const { diskInfo, dataSource, diskNotice } = storeToRefs(diskStore);
 const themeStore = useThemeStore();
 const { currentTheme } = storeToRefs(themeStore);
 
@@ -42,14 +41,7 @@ function changeTheme(event: Event) {
 
 onMounted(async () => {
   themeStore.initializeTheme();
-  const result = await invokeOrDemo<DiskInfo>("get_disk_info", demoDiskInfo);
-  if (result.source === "error") {
-    dataSource.value = "demo";
-    diskNotice.value = `无法读取本机磁盘信息：${result.error}`;
-    return;
-  }
-  diskInfo.value = result.data;
-  dataSource.value = result.source === "native" ? "native" : "demo";
+  await diskStore.refreshDiskInfo();
 });
 </script>
 

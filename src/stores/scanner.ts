@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
+import { useDiskStore } from "./disk";
 import {
   demoCleanReport,
   demoScanResult,
@@ -77,6 +78,7 @@ export const useScannerStore = defineStore("scanner", () => {
   }
 
   async function startScan() {
+    if (isScanning.value || isCleaning.value) return;
     isScanning.value = true;
     scanProgress.value = 0;
     activePhase.value = scanPhases[0];
@@ -151,6 +153,7 @@ export const useScannerStore = defineStore("scanner", () => {
   }
 
   async function cleanSelected() {
+    if (isCleaning.value || isScanning.value) return;
     cleanReport.value = null;
     cleanProgress.value = 0;
     cleanPhase.value = "等待清理";
@@ -171,7 +174,7 @@ export const useScannerStore = defineStore("scanner", () => {
     };
     try {
       cleanProgress.value = 45;
-      cleanPhase.value = "正在移入废纸篓";
+      cleanPhase.value = "正在直接删除已选项目";
       const result = await invokeOrDemo<CleanReport>("clean_categories", fallback, {
         categoryIds: selectedItems.value.map((item) => item.id),
       });
@@ -191,6 +194,7 @@ export const useScannerStore = defineStore("scanner", () => {
       cleanProgress.value = 85;
       cleanPhase.value = "正在更新扫描结果";
       cleanReport.value = result.data;
+      await useDiskStore().refreshDiskInfo();
       const refreshedScan = await invokeOrDemo<ScanResult>("scan_system", demoScanResult);
       if (refreshedScan.source === "native" || refreshedScan.source === "empty") {
         replaceScanResults(refreshedScan.data);

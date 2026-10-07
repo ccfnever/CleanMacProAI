@@ -1,6 +1,5 @@
 /// 清理引擎 — Tauri Commands
 
-use super::trash_support::move_to_trash;
 use crate::models::{CleanError, CleanReport};
 use crate::rules::{load_rules, path_matches_any, CategoryRule};
 use glob::glob;
@@ -12,13 +11,21 @@ const RULES_YAML: &str = include_str!("../rules/cleanup_rules.yaml");
 
 #[tauri::command]
 pub async fn clean_items(paths: Vec<String>) -> Result<CleanReport, String> {
-    clean_paths(paths)
+    tauri::async_runtime::spawn_blocking(move || clean_paths(paths))
+        .await
+        .map_err(|error| format!("Cleanup task failed: {error}"))?
 }
 
 #[tauri::command]
 pub async fn clean_categories(
     category_ids: Vec<String>,
 ) -> Result<CleanReport, String> {
+    tauri::async_runtime::spawn_blocking(move || clean_category_paths(category_ids))
+        .await
+        .map_err(|error| format!("Cleanup task failed: {error}"))?
+}
+
+fn clean_category_paths(category_ids: Vec<String>) -> Result<CleanReport, String> {
     let rules = load_rules(RULES_YAML)?;
     let mut paths = Vec::new();
     let mut skipped_errors = Vec::new();
@@ -49,7 +56,6 @@ pub async fn clean_categories(
     Ok(report)
 }
 
-#[tauri::command]
 fn clean_paths(paths: Vec<String>) -> Result<CleanReport, String> {
     let mut cleaned_count = 0_u64;
     let mut freed_bytes = 0_u64;
@@ -69,7 +75,7 @@ fn clean_paths(paths: Vec<String>) -> Result<CleanReport, String> {
         }
 
         let size = path_size(&path_buf);
-        let result = move_to_trash(&path_buf);
+        let result = delete_clean_target(&path_buf);
 
         match result {
             Ok(()) => {
@@ -89,6 +95,16 @@ fn clean_paths(paths: Vec<String>) -> Result<CleanReport, String> {
         skipped_count,
         errors,
     })
+}
+
+fn delete_clean_target(path: &Path) -> Result<(), String> {
+    // Inspect the entry itself: unlink symlinks without deleting their target.
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    }
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -150,7 +166,7 @@ fn is_safe_clean_target(path: &Path) -> bool {
         PathBuf::from("/Library/Logs"),
     ];
 
-    allowed_roots.iter().any(|root| canonical.starts_with(root))
+    allowed_roots.iter().any(|root| canonical != *root && canonical.starts_with(root))
 }
 
 fn path_size(path: &Path) -> u64 {
@@ -170,4 +186,45 @@ fn path_size(path: &Path) -> u64 {
         .filter(|metadata| metadata.is_file())
         .map(|metadata| metadata.len())
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permanently_deletes_disposable_files_and_nested_directories() {
+        let root = std::env::temp_dir().join(format!("cleanmac-cleaner-{}", std::process::id()));
+        fs::create_dir_all(root.join("folder/nested")).unwrap();
+        fs::write(root.join("file"), b"disposable test data").unwrap();
+        fs::write(root.join("folder/nested/file"), b"disposable test data").unwrap();
+        delete_clean_target(&root.join("file")).unwrap();
+        delete_clean_target(&root.join("folder")).unwrap();
+        assert!(!root.join("file").exists());
+        assert!(!root.join("folder").exists());
+        assert!(delete_clean_target(&root.join("missing")).is_err());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_symlink_preserves_target() {
+        let root = std::env::temp_dir().join(format!("cleanmac-cleaner-link-{}", std::process::id()));
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("target/file"), b"keep").unwrap();
+        std::os::unix::fs::symlink(root.join("target"), root.join("link")).unwrap();
+        delete_clean_target(&root.join("link")).unwrap();
+        assert!(root.join("target/file").exists());
+        assert!(fs::symlink_metadata(root.join("link")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_rejects_protected_roots_and_personal_documents() {
+        let home = dirs::home_dir().unwrap();
+        assert!(!is_safe_clean_target(&home));
+        assert!(!is_safe_clean_target(&home.join("Library/Caches")));
+        assert!(!is_safe_clean_target(&home.join("Documents")));
+        assert!(!is_safe_clean_target(Path::new("/")));
+    }
 }
