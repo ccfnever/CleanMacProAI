@@ -42,6 +42,7 @@ fn main() {
             commands::space_map::analyze_space_map,
             commands::space_map::get_space_map_progress,
             commands::space_map::cancel_space_map,
+            commands::space_map::trash_space_map_entry,
             commands::space_map::choose_space_map_directory,
         ])
         .run(tauri::generate_context!())

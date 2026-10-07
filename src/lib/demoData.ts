@@ -58,6 +58,7 @@ export interface DiskInfo {
 }
 
 export interface SpaceMapEntry {
+  children?: SpaceMapEntry[];
   name: string;
   path: string;
   logical_size: number;
@@ -71,6 +72,7 @@ export interface SpaceMapEntry {
 }
 
 export interface SpaceMapResult {
+  incomplete?: boolean;
   root_path: string;
   display_path: string;
   logical_size: number;

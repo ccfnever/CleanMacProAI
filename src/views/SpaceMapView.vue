@@ -9,6 +9,8 @@ import { TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsOption } from "echarts";
 import AppIcon from "../components/AppIcon.vue";
+import { layoutSpaceMap, spaceMapPreviewEntries } from "../lib/spaceMapLayout";
+import { removeSpaceMapEntry } from "../lib/spaceMapResults";
 import {
   demoSpaceMapResult,
   formatBytes,
@@ -21,18 +23,49 @@ import {
 
 echarts.use([TreemapChart, TooltipComponent, CanvasRenderer]);
 
-type SortKey = "logical" | "allocated" | "name";
+type SortKey = "allocated" | "name";
 
 const themeStore = useThemeStore();
 const { currentTheme } = storeToRefs(themeStore);
 const chartElement = ref<HTMLDivElement | null>(null);
-const result = ref<SpaceMapResult | null>(null);
+const liveChartElement = ref<HTMLDivElement | null>(null);
+const liveAspectRatio = ref(3);
+let liveResizeObserver: ResizeObserver | null = null;
+const scanResult = ref<SpaceMapResult | null>(null);
+const currentPath = ref("");
+const selectedEntry = ref<SpaceMapEntry | null>(null);
+const selectedFileElement = ref<HTMLElement | null>(null);
+const stopping = ref(false);
+const trashDialog = ref<HTMLDialogElement | null>(null);
+const pendingTrash = ref<SpaceMapEntry | null>(null);
+const deleting = ref(false);
+const trashError = ref("");
+const noticeMessage = ref("");
+const listMode = ref<"directory" | "files">("directory");
+const entryIndex = computed(() => {
+  const index = new Map<string, SpaceMapEntry>();
+  const visit = (items: SpaceMapEntry[]) => {
+    for (const entry of items) { index.set(entry.path, entry); visit(entry.children ?? []); }
+  };
+  visit(scanResult.value?.entries ?? []);
+  return index;
+});
+const result = computed<SpaceMapResult | null>(() => {
+  const snapshot = scanResult.value;
+  if (!snapshot) return null;
+  const directory = entryIndex.value.get(currentPath.value);
+  if (!directory) return snapshot;
+  return { ...snapshot, root_path: directory.path, display_path: directory.path,
+    logical_size: directory.logical_size, allocated_size: directory.allocated_size,
+    file_count: directory.file_count, directory_count: directory.directory_count,
+    entries: directory.children ?? [] };
+});
 const loading = ref(false);
 const cancelled = ref(false);
 const errorMessage = ref("");
 const source = ref<"native" | "demo">("demo");
 const query = ref("");
-const sortKey = ref<SortKey>("logical");
+const sortKey = ref<SortKey>("allocated");
 const scopeRoot = ref("");
 const minimumFileSize = ref(100 * 1024 * 1024);
 const progress = ref<SpaceMapProgress>(emptyProgress());
@@ -46,20 +79,26 @@ const isNativeRuntime = Boolean((window as Window & { __TAURI_INTERNALS__?: unkn
 
 const visualizationEntries = computed(() =>
   (loading.value ? progress.value.entries : result.value?.entries ?? [])
-    .filter((entry) => entry.logical_size > 0),
+    .filter((entry) => entry.allocated_size > 0),
 );
-const liveTiles = computed(() => visualizationEntries.value.slice(0, 6));
+
+const liveTiles = computed(() => layoutSpaceMap(spaceMapPreviewEntries(
+  progress.value.entries, progress.value.matched_allocated_size, progress.value.root_path,
+), liveAspectRatio.value));
 
 const thresholdLabel = computed(() => formatThreshold(minimumFileSize.value));
 
 const entries = computed(() => {
   const keyword = query.value.trim().toLocaleLowerCase("zh-CN");
-  const items = (result.value?.entries ?? []).filter((entry) =>
-    !keyword || entry.name.toLocaleLowerCase("zh-CN").includes(keyword),
+  const candidates = listMode.value === "files"
+    ? [...entryIndex.value.values()].filter((entry) => !entry.is_dir)
+    : result.value?.entries ?? [];
+  const items = candidates.filter((entry) =>
+    !keyword || `${entry.name} ${entry.path}`.toLocaleLowerCase("zh-CN").includes(keyword),
   );
   return [...items].sort((left, right) => {
     if (sortKey.value === "name") return left.name.localeCompare(right.name, "zh-CN");
-    const field = sortKey.value === "allocated" ? "allocated_size" : "logical_size";
+    const field = "allocated_size";
     return right[field] - left[field] || left.name.localeCompare(right.name, "zh-CN");
   });
 });
@@ -80,7 +119,7 @@ const breadcrumbItems = computed(() => {
     : rootParts[rootParts.length - 1] || root;
   const items = [{ label: rootName, path: root }];
   if (current === root) return items;
-  const relative = current.startsWith(`${root}/`) ? current.slice(root.length + 1) : "";
+  const relative = current.startsWith(root === "/" ? "/" : `${root}/`) ? current.slice(root === "/" ? 1 : root.length + 1) : "";
   let path = root;
   for (const part of relative.split("/").filter(Boolean)) {
     path = `${path === "/" ? "" : path}/${part}`;
@@ -89,15 +128,11 @@ const breadcrumbItems = computed(() => {
   return items;
 });
 
-const allocationDifference = computed(() => {
-  if (!result.value) return 0;
-  return Math.max(0, result.value.logical_size - result.value.allocated_size);
-});
 
 function percentage(entry: SpaceMapEntry) {
-  const total = result.value?.logical_size ?? 0;
+  const total = (listMode.value === "files" ? scanResult.value : result.value)?.allocated_size ?? 0;
   if (total <= 0) return "0%";
-  const value = entry.logical_size / total * 100;
+  const value = entry.allocated_size / total * 100;
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}%`;
 }
 
@@ -109,12 +144,6 @@ function formatThreshold(value: number) {
   return formatBytes(value).replace(".0 ", " ");
 }
 
-function formatDate(value?: string) {
-  if (!value) return "未知";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "未知";
-  return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
-}
 
 function emptyProgress(): SpaceMapProgress {
   return {
@@ -145,12 +174,16 @@ function disposeChart() {
 }
 
 async function analyze(path?: string, resetScope = false) {
+  if (loading.value || deleting.value) return;
   const sequence = ++requestSequence;
   stopProgressPolling();
   disposeChart();
   loading.value = true;
+  source.value = isNativeRuntime ? "native" : "demo";
   cancelled.value = false;
+  stopping.value = false;
   errorMessage.value = "";
+  noticeMessage.value = "";
   progress.value = {
     ...emptyProgress(),
     is_scanning: true,
@@ -171,10 +204,10 @@ async function analyze(path?: string, resetScope = false) {
     });
   } else {
     await simulateProgress(fallback, sequence);
-    response = { source: "demo" as const, data: fallback };
+    response = { source: "demo" as const, data: stopping.value ? partialDemoResult() : fallback };
   }
-  stopProgressPolling();
   if (sequence !== requestSequence) return;
+  stopProgressPolling();
 
   if (response.source === "error") {
     disposeChart();
@@ -183,7 +216,11 @@ async function analyze(path?: string, resetScope = false) {
     return;
   }
 
-  result.value = response.data;
+  scanResult.value = response.data;
+  currentPath.value = response.data.root_path;
+  selectedEntry.value = null;
+  cancelled.value = Boolean(response.data.incomplete);
+  stopping.value = false;
   source.value = response.source === "native" ? "native" : "demo";
   if (resetScope || !scopeRoot.value) scopeRoot.value = response.data.root_path;
   disposeChart();
@@ -206,7 +243,7 @@ function startProgressPolling(sequence: number) {
       progressRequestInFlight = false;
     }
   };
-  progressTimer = window.setInterval(() => void poll(), 130);
+  progressTimer = window.setInterval(() => void poll(), 250);
 }
 
 function stopProgressPolling() {
@@ -215,31 +252,33 @@ function stopProgressPolling() {
   progressRequestInFlight = false;
 }
 
-function stopAnalysis() {
-  requestSequence += 1;
-  stopProgressPolling();
-  if (isNativeRuntime) void invoke("cancel_space_map");
-  disposeChart();
-  loading.value = false;
-  cancelled.value = true;
-  void nextTick(renderChart);
+async function stopAnalysis() {
+  stopping.value = true;
+  if (isNativeRuntime) {
+    try { await invoke("cancel_space_map"); }
+    catch (error) { stopping.value = false; errorMessage.value = String(error); }
+  }
+}
+
+function partialDemoResult(): SpaceMapResult {
+  const snapshot = progress.value;
+  return { root_path: snapshot.root_path, display_path: snapshot.display_path,
+    minimum_file_size: snapshot.minimum_file_size,
+    logical_size: snapshot.matched_logical_size, allocated_size: snapshot.matched_allocated_size,
+    file_count: snapshot.matched_file_count, directory_count: snapshot.scanned_directory_count,
+    scanned_file_count: snapshot.scanned_file_count, ignored_file_count: snapshot.ignored_file_count,
+    ignored_logical_size: snapshot.ignored_logical_size, skipped_items: snapshot.skipped_items,
+    hard_link_duplicates: snapshot.hard_link_duplicates, symlink_count: snapshot.symlink_count,
+    entries: snapshot.entries, scan_duration_ms: snapshot.elapsed_ms, incomplete: true };
 }
 
 async function simulateProgress(finalResult: SpaceMapResult, sequence: number) {
   const steps = 10;
   for (let step = 1; step <= steps; step += 1) {
-    if (sequence !== requestSequence) return;
+    if (sequence !== requestSequence || stopping.value) return;
     const entries = finalResult.entries
       .slice(0, Math.max(1, Math.ceil(step * finalResult.entries.length / steps)))
-      .map((entry, index) => {
-        const factor = Math.min(1, Math.max(.12, (step - index * .7) / 5));
-        return {
-          ...entry,
-          logical_size: Math.round(entry.logical_size * factor),
-          allocated_size: Math.round(entry.allocated_size * factor),
-          file_count: Math.max(1, Math.round(entry.file_count * factor)),
-        };
-      });
+      .map((entry) => scaleDemoEntry(entry, step / steps));
     const factor = step / steps;
     progress.value = {
       ...emptyProgress(),
@@ -265,57 +304,52 @@ async function simulateProgress(finalResult: SpaceMapResult, sequence: number) {
   }
 }
 
-function demoResultFor(path?: string): SpaceMapResult {
-  if (!path || path === demoSpaceMapResult.root_path) return adaptDemoThreshold(demoSpaceMapResult);
-  const parent = demoSpaceMapResult.entries.find((entry) => entry.path === path);
-  if (!parent) return adaptDemoThreshold({ ...demoSpaceMapResult, root_path: path, display_path: path, entries: [] });
-  const ratios = [0.46, 0.28, 0.17, 0.09];
-  const names = parent.name === "Projects"
-    ? ["build", "node_modules", "Sources", "Archives"]
-    : ["Application Support", "Caches", "Containers", "Logs"];
-  const childEntries = names.map((name, index) => ({
-    name,
-    path: `${path}/${name}`,
-    logical_size: Math.round(parent.logical_size * ratios[index]),
-    allocated_size: Math.round(parent.allocated_size * ratios[index]),
-    file_count: Math.round(parent.file_count * ratios[index]),
-    directory_count: Math.round(parent.directory_count * ratios[index]),
-    modified_at: parent.modified_at,
-    is_dir: true,
-    is_package: false,
-    is_cloud_placeholder: false,
-  }));
-  return adaptDemoThreshold({
-    ...demoSpaceMapResult,
-    root_path: path,
-    display_path: path.replace("/Users/demo", "~"),
-    logical_size: parent.logical_size,
-    allocated_size: parent.allocated_size,
-    file_count: parent.file_count,
-    directory_count: parent.directory_count,
-    entries: childEntries,
-    scan_duration_ms: 940,
-  });
+function scaleDemoEntry(entry: SpaceMapEntry, factor: number): SpaceMapEntry {
+  const children = entry.children?.map((child) => scaleDemoEntry(child, factor));
+  return { ...entry, children,
+    logical_size: children?.length ? children.reduce((sum, child) => sum + child.logical_size, 0) : Math.round(entry.logical_size * factor),
+    allocated_size: children?.length ? children.reduce((sum, child) => sum + child.allocated_size, 0) : Math.round(entry.allocated_size * factor),
+  };
 }
 
-function adaptDemoThreshold(base: SpaceMapResult): SpaceMapResult {
-  const factor = Math.min(1.08, Math.sqrt((100 * 1024 * 1024) / minimumFileSize.value));
-  const entries = base.entries.map((entry) => ({
-    ...entry,
-    logical_size: Math.round(entry.logical_size * factor),
-    allocated_size: Math.round(entry.allocated_size * factor),
-    file_count: Math.max(1, Math.round(entry.file_count * factor)),
-  }));
-  const matchedFileCount = entries.reduce((sum, entry) => sum + entry.file_count, 0);
-  return {
-    ...base,
-    minimum_file_size: minimumFileSize.value,
-    logical_size: entries.reduce((sum, entry) => sum + entry.logical_size, 0),
-    allocated_size: entries.reduce((sum, entry) => sum + entry.allocated_size, 0),
-    file_count: matchedFileCount,
-    ignored_file_count: Math.max(0, base.scanned_file_count - matchedFileCount),
-    entries,
-  };
+function demoResultFor(path?: string): SpaceMapResult {
+  const base = demoSpaceMapResult;
+  const entries = base.entries.map((entry) => {
+    if (!entry.is_dir) return entry;
+    const names = ["Archives", "Media", "Builds"];
+    const children = names.map((name, index) => {
+      const ratio = [.5, .3, .2][index];
+      const directory = { ...entry, name, path: `${entry.path}/${name}`,
+        logical_size: Math.round(entry.logical_size * ratio), allocated_size: Math.round(entry.allocated_size * ratio) };
+      return { ...directory, children: [{ ...directory, name: `${name.toLowerCase()}.zip`,
+        path: `${directory.path}/${name.toLowerCase()}.zip`, is_dir: false, is_package: false, file_count: 1, directory_count: 0 }] };
+    });
+    return { ...entry, children, file_count: children.length, directory_count: children.length };
+  });
+  const filter = (items: SpaceMapEntry[]): SpaceMapEntry[] => items.flatMap((entry) => {
+    if (!entry.is_dir) return entry.allocated_size >= minimumFileSize.value ? [entry] : [];
+    const children = filter(entry.children ?? []);
+    if (!children.length) return [];
+    return [{ ...entry, children,
+      logical_size: children.reduce((sum, child) => sum + child.logical_size, 0),
+      allocated_size: children.reduce((sum, child) => sum + child.allocated_size, 0),
+      file_count: children.reduce((sum, child) => sum + child.file_count, 0) }];
+  });
+  const filtered = filter(entries);
+  const count = filtered.reduce((sum, entry) => sum + entry.file_count, 0);
+  return { ...base, root_path: path ?? base.root_path, display_path: path ?? base.display_path,
+    minimum_file_size: minimumFileSize.value, entries: filtered,
+    logical_size: filtered.reduce((sum, entry) => sum + entry.logical_size, 0),
+    allocated_size: filtered.reduce((sum, entry) => sum + entry.allocated_size, 0),
+    file_count: count, ignored_file_count: base.scanned_file_count - count };
+}
+
+function browseDirectory(path: string) {
+  if (path !== scanResult.value?.root_path && !entryIndex.value.get(path)?.is_dir) return;
+  currentPath.value = path;
+  query.value = "";
+  selectedEntry.value = null;
+  listMode.value = "directory";
 }
 
 async function chooseDirectory() {
@@ -332,20 +366,61 @@ async function chooseDirectory() {
   }
 }
 
-async function openEntry(entry: SpaceMapEntry) {
-  if (entry.is_dir && !entry.is_package) {
-    await analyze(entry.path, false);
-    return;
-  }
-  await revealInFinder(entry.path);
+function openEntry(entry: SpaceMapEntry) {
+  if (entry.is_dir) { browseDirectory(entry.path); return; }
+  selectedEntry.value = entry;
+  void nextTick(() => selectedFileElement.value?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
 }
 
 async function revealInFinder(path: string) {
-  if (!isNativeRuntime) return;
+  if (!isNativeRuntime) {
+    noticeMessage.value = `预览模式：本机运行时将在 Finder 中显示 ${path}`;
+    return;
+  }
   try {
     await invoke("open_in_finder", { path });
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function requestTrash(entry: SpaceMapEntry) {
+  if (loading.value || deleting.value || !entryIndex.value.has(entry.path)) return;
+  pendingTrash.value = entry;
+  trashError.value = "";
+  await nextTick();
+  trashDialog.value?.showModal();
+}
+
+function cancelTrash() {
+  if (deleting.value) return;
+  trashDialog.value?.close();
+  pendingTrash.value = null;
+  trashError.value = "";
+}
+
+async function confirmTrash() {
+  const entry = pendingTrash.value;
+  const snapshot = scanResult.value;
+  if (!entry || !snapshot || deleting.value) return;
+  deleting.value = true;
+  trashError.value = "";
+  try {
+    if (isNativeRuntime) {
+      await invoke("trash_space_map_entry", { path: entry.path, rootPath: snapshot.root_path });
+    }
+    scanResult.value = removeSpaceMapEntry(snapshot, entry.path);
+    if (selectedEntry.value?.path === entry.path || selectedEntry.value?.path.startsWith(`${entry.path}/`)) selectedEntry.value = null;
+    if (currentPath.value !== snapshot.root_path && !entryIndex.value.has(currentPath.value)) currentPath.value = snapshot.root_path;
+    noticeMessage.value = isNativeRuntime
+      ? `“${entry.name}”已移入废纸篓，可在 Finder 的废纸篓中恢复。`
+      : `预览已移除“${entry.name}”，未操作本机文件。`;
+    trashDialog.value?.close();
+    pendingTrash.value = null;
+  } catch (error) {
+    trashError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    deleting.value = false;
   }
 }
 
@@ -359,7 +434,7 @@ async function requestFullDiskAccess() {
 }
 
 function renderChart() {
-  if (!chartElement.value) return;
+  if (loading.value || !chartElement.value) return;
   const currentElement = chartElement.value;
   chart ??= echarts.init(currentElement, undefined, { renderer: "canvas" });
   const currentChart = chart;
@@ -377,19 +452,19 @@ function renderChart() {
   };
   const palette = palettes[currentTheme.value] ?? palettes.pet;
   const option: EChartsOption = {
-    animationDuration: 180,
-    animationDurationUpdate: 180,
+    animation: !loading.value,
+    animationDuration: 0,
+    animationDurationUpdate: 0,
     tooltip: {
       confine: true,
       formatter(params: unknown) {
         const data = (params as { data?: SpaceMapEntry & { value: number } }).data;
         if (!data) return "";
-        return `<strong>${escapeHtml(data.name)}</strong><br>逻辑大小 ${formatBytes(data.logical_size)}<br>实际分配 ${formatBytes(data.allocated_size)}<br>${formatCount(data.file_count)} 个文件`;
+        return `<strong>${escapeHtml(data.name)}</strong><br>磁盘占用 ${formatBytes(data.allocated_size)}<br>${formatCount(data.file_count)} 个文件`;
       },
     },
     series: [{
       type: "treemap",
-      universalTransition: true,
       left: 0,
       top: 0,
       right: 0,
@@ -408,22 +483,17 @@ function renderChart() {
         fontWeight: 600,
         lineHeight: 21,
       },
-      upperLabel: { show: false },
+      upperLabel: { show: true, height: 28, color: "#fff", formatter: "{b}" },
+      leafDepth: 2,
+      levels: [{ itemStyle: { borderWidth: 0, gapWidth: 4 } },
+        { itemStyle: { borderWidth: 3, gapWidth: 3 }, upperLabel: { show: true } },
+        { itemStyle: { borderWidth: 1, gapWidth: 2 } }],
       itemStyle: { borderColor: surface, borderWidth: 4, gapWidth: 4, borderRadius: 9 },
       emphasis: { itemStyle: { shadowBlur: 14, shadowColor: "rgba(0,0,0,.14)" } },
-      data: chartEntries.map((entry, index) => ({
-        ...entry,
-        id: entry.path,
-        value: entry.logical_size,
-        itemStyle: { color: palette[index % palette.length] },
-        label: {
-          color: index < 2 ? "#fff" : text,
-          formatter: `${entry.name}\n${formatBytes(entry.logical_size)}`,
-        },
-      })),
+      data: chartData(chartEntries, palette, text),
     }],
   };
-  currentChart.setOption(option, { notMerge: false, lazyUpdate: false });
+  currentChart.setOption(option, { notMerge: true, lazyUpdate: false });
   currentChart.off("click");
   if (!loading.value) {
     currentChart.on("click", (params) => {
@@ -433,11 +503,46 @@ function renderChart() {
   }
 }
 
+// Bound canvas data independently of the retained directory tree.
+function chartData(items: SpaceMapEntry[], palette: string[], text: string, depth = 0): object[] {
+  const sorted = [...items].sort((a, b) => b.allocated_size - a.allocated_size);
+  const visible = sorted.slice(0, 24);
+  const nodes: object[] = visible.map((entry, index) => ({
+    ...entry, id: entry.path, value: entry.allocated_size,
+    children: depth < 1 && entry.children?.length ? chartData(entry.children, palette, text, depth + 1) : undefined,
+    itemStyle: { color: palette[index % palette.length], borderColor: palette[index % palette.length] },
+    upperLabel: { color: index < 2 ? "#fff" : text, formatter: `${entry.name} · ${formatBytes(entry.allocated_size)}` },
+    label: { color: index < 2 ? "#fff" : text, formatter: `${entry.name}\n${formatBytes(entry.allocated_size)}` },
+  }));
+  if (sorted.length > visible.length) {
+    const rest = sorted.slice(24);
+    const path = rest[0].path.slice(0, rest[0].path.lastIndexOf("/")) || "/";
+    nodes.push({ name: `其余 ${rest.length} 项 · 点击查看目录`, path, is_dir: true,
+      logical_size: rest.reduce((sum, entry) => sum + entry.logical_size, 0),
+      allocated_size: rest.reduce((sum, entry) => sum + entry.allocated_size, 0),
+      file_count: rest.reduce((sum, entry) => sum + entry.file_count, 0),
+      value: rest.reduce((sum, entry) => sum + entry.allocated_size, 0), itemStyle: { color: palette[5] } });
+  }
+  return nodes;
+}
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>'"]/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   })[character] ?? character);
 }
+
+watch(liveChartElement, (element) => {
+  liveResizeObserver?.disconnect();
+  liveResizeObserver = null;
+  if (!element) return;
+  liveResizeObserver = new ResizeObserver(([entry]) => {
+    if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+      liveAspectRatio.value = entry.contentRect.width / entry.contentRect.height;
+    }
+  });
+  liveResizeObserver.observe(element);
+}, { flush: "post" });
 
 watch(currentTheme, () => nextTick(renderChart));
 watch(visualizationEntries, () => nextTick(renderChart));
@@ -451,6 +556,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  liveResizeObserver?.disconnect();
   requestSequence += 1;
   stopProgressPolling();
   if (isNativeRuntime) void invoke("cancel_space_map");
@@ -462,61 +568,65 @@ onBeforeUnmount(() => {
   <section class="space-page" aria-labelledby="space-map-title">
     <header class="space-heading">
       <div>
-        <p class="eyebrow">大文件优先 · 不会移动或删除文件</p>
+        <p class="eyebrow">按磁盘占用定位 · 删除前确认</p>
         <h1 id="space-map-title">快速找到真正占空间的文件</h1>
-        <p>默认忽略小于 {{ thresholdLabel }} 的文件。扫描结果会边发现边填入空间拼图，完成后可以逐层进入目录。</p>
+        <p>默认聚焦磁盘占用 ≥ {{ thresholdLabel }} 的文件。点击拼图逐层查看，或用大文件排行直接定位；停止扫描也能查看已发现内容。</p>
       </div>
       <div class="heading-actions">
         <label class="threshold-select">
-          <span>大文件标准</span>
-          <select v-model.number="minimumFileSize" :disabled="loading" @change="analyze(result?.root_path, false)">
+          <span>占用标准</span>
+          <select v-model.number="minimumFileSize" :disabled="loading || deleting" @change="analyze(scanResult?.root_path, true)">
             <option :value="50 * 1024 * 1024">≥ 50 MB</option>
             <option :value="100 * 1024 * 1024">≥ 100 MB</option>
             <option :value="500 * 1024 * 1024">≥ 500 MB</option>
             <option :value="1024 * 1024 * 1024">≥ 1 GB</option>
           </select>
         </label>
-        <button type="button" class="secondary-button" :disabled="loading" @click="analyze(result?.root_path, false)">
+        <button type="button" class="secondary-button" :disabled="loading || deleting" @click="analyze(scanResult?.root_path, true)">
           <AppIcon name="refresh" :size="16" /> 重新分析
         </button>
-        <button type="button" class="primary-button" :disabled="loading" @click="chooseDirectory">
+        <button type="button" class="primary-button" :disabled="loading || deleting" @click="chooseDirectory">
           <AppIcon name="folder" :size="17" /> 扫描范围
         </button>
       </div>
     </header>
 
     <p v-if="errorMessage" class="error-banner" role="alert">{{ errorMessage }}</p>
+    <p v-if="noticeMessage" class="partial-banner" role="status">{{ noticeMessage }}</p>
 
     <div class="pathbar" aria-label="当前分析路径">
       <AppIcon name="disk" :size="16" />
       <template v-for="(item, index) in breadcrumbItems" :key="item.path">
         <span v-if="index" aria-hidden="true">/</span>
-        <button type="button" :disabled="loading || index === breadcrumbItems.length - 1" @click="analyze(item.path, false)">{{ item.label }}</button>
+        <button type="button" :disabled="loading || index === breadcrumbItems.length - 1" @click="browseDirectory(item.path)">{{ item.label }}</button>
       </template>
-      <span :class="['source-chip', { native: source === 'native' }]">{{ source === "native" ? "本机实时数据" : "界面预览数据" }}</span>
+      <span :class="['source-chip', { native: source === 'native' }]">{{ source === "native" ? "本机扫描结果" : "界面预览数据" }}</span>
     </div>
 
     <section v-if="loading" class="live-scan" aria-live="polite">
       <header class="live-scan-head">
-        <div class="live-title"><span class="live-dot"></span><div><strong>正在寻找 ≥ {{ thresholdLabel }} 的大文件</strong><small>{{ progress.current_path || "正在打开扫描范围…" }}</small></div></div>
-        <button type="button" @click="stopAnalysis">停止</button>
+        <div class="live-title"><span class="live-dot"></span><div><strong>正在寻找磁盘占用 ≥ {{ thresholdLabel }} 的文件</strong><small>{{ progress.current_path || "正在打开扫描范围…" }}</small></div></div>
+        <button type="button" :disabled="stopping" @click="stopAnalysis">{{ stopping ? "正在保存结果…" : "停止并查看" }}</button>
       </header>
       <div class="live-metrics">
         <span><small>已检查</small><strong>{{ formatCount(progress.scanned_file_count) }}</strong><em>个文件</em></span>
         <span><small>已找到</small><strong>{{ formatCount(progress.matched_file_count) }}</strong><em>个大文件</em></span>
-        <span><small>累计大小</small><strong>{{ formatBytes(progress.matched_logical_size) }}</strong><em>持续增加中</em></span>
-        <span><small>用时</small><strong>{{ (progress.elapsed_ms / 1000).toFixed(1) }} 秒</strong><em>最多四路并行</em></span>
+        <span><small>累计磁盘占用</small><strong>{{ formatBytes(progress.matched_allocated_size) }}</strong><em>持续增加中</em></span>
+        <span><small>用时</small><strong>{{ (progress.elapsed_ms / 1000).toFixed(1) }} 秒</strong><em>扫描中</em></span>
       </div>
       <div class="live-puzzle">
-        <div v-if="!liveTiles.length" class="puzzle-placeholder" aria-hidden="true">
-          <span v-for="index in 12" :key="index" :style="{ animationDelay: `${index * 45}ms` }"></span>
-        </div>
-        <TransitionGroup v-else name="puzzle-tile" tag="div" class="live-tile-grid" aria-label="扫描中实时填充的大文件空间拼图">
-          <div v-for="(entry, index) in liveTiles" :key="entry.path" :class="['live-tile', `tile-${index + 1}`]">
-            <span>{{ entry.name }}</span><strong>{{ formatBytes(entry.logical_size) }}</strong><small>{{ formatCount(entry.file_count) }} 个大文件</small>
+        <div ref="liveChartElement" class="live-treemap" role="img" aria-label="固定区域内按当前已发现总大小分割的空间拼图">
+          <div v-if="!liveTiles.length" class="puzzle-placeholder" aria-hidden="true">
+            <span v-for="index in 6" :key="index" :style="{ animationDelay: `${index * 45}ms` }"></span>
           </div>
-        </TransitionGroup>
-        <div class="puzzle-caption"><span>每发现一批大文件，拼图就会长出一块</span><strong>{{ visualizationEntries.length }} 个目录已有结果</strong></div>
+          <div v-for="(tile, index) in liveTiles" :key="tile.entry.path"
+            :class="['live-space-tile', `live-color-${index % 6}`, { 'compact-tile': tile.width < .1 || tile.height < .14 }]"
+            :style="{ left: `${tile.x * 100}%`, top: `${tile.y * 100}%`, width: `${tile.width * 100}%`, height: `${tile.height * 100}%` }"
+            :title="`${tile.entry.name} · ${formatBytes(tile.entry.allocated_size)}`">
+            <span>{{ tile.entry.name }}</span><strong>{{ formatBytes(tile.entry.allocated_size) }}</strong>
+          </div>
+        </div>
+        <div class="puzzle-caption"><span>整个区域代表当前已发现内容的 100%；最大 32 项单独显示，其余合并</span><strong>{{ visualizationEntries.length }} 个项目单独显示</strong></div>
       </div>
     </section>
 
@@ -528,27 +638,27 @@ onBeforeUnmount(() => {
     </section>
 
     <template v-else-if="result">
+      <p v-if="cancelled" class="partial-banner" role="status">扫描已停止，以下是已发现的部分结果。可以点击文件夹继续查看，尚未扫描的内容不计入占用。</p>
+
       <section class="summary-strip" aria-label="空间分析摘要">
-        <div><small>大文件逻辑大小</small><strong>{{ formatBytes(result.logical_size) }}</strong><span>用于矩形面积</span></div>
-        <div><small>大文件实际分配</small><strong>{{ formatBytes(result.allocated_size) }}</strong><span>文件系统已分配块</span></div>
+        <div><small>磁盘占用</small><strong>{{ formatBytes(result.allocated_size) }}</strong><span>用于拼图面积，按文件系统已分配空间统计</span></div>
         <div><small>找到的大文件</small><strong>{{ formatCount(result.file_count) }}</strong><span>共检查 {{ formatCount(result.scanned_file_count) }} 个文件</span></div>
-        <div><small>完成时间</small><strong>{{ (result.scan_duration_ms / 1000).toFixed(1) }} 秒</strong><span>{{ result.entries.length }} 个直接子项</span></div>
+        <div><small>{{ cancelled ? "停止时用时" : "扫描用时" }}</small><strong>{{ (result.scan_duration_ms / 1000).toFixed(1) }} 秒</strong><span>{{ result.entries.length }} 个直接子项</span></div>
       </section>
 
       <section class="map-panel">
         <div class="panel-title">
-          <div><h2>大文件空间拼图</h2><p>只统计 ≥ {{ formatThreshold(result.minimum_file_size) }} 的文件，面积越大占用越大</p></div>
+          <div><h2>大文件空间拼图</h2><p>按磁盘占用统计 ≥ {{ formatThreshold(result.minimum_file_size) }} 的文件，面积越大占用越大；父文件夹内展示子项，点击查看已扫描内容</p></div>
           <span>{{ result.display_path }}</span>
         </div>
-        <div v-if="result.logical_size > 0" ref="chartElement" class="treemap-chart" role="img" :aria-label="`${result.display_path} 目录占用矩形图`"></div>
+        <div v-if="result.allocated_size > 0" ref="chartElement" class="treemap-chart" role="img" :aria-label="`${result.display_path} 目录占用矩形图`"></div>
         <div v-else class="empty-map"><AppIcon name="folder" :size="30" /><strong>没有找到达到当前标准的大文件</strong></div>
       </section>
 
-      <div v-if="result.skipped_items || result.hard_link_duplicates || result.symlink_count || allocationDifference" class="accuracy-note">
+      <div v-if="result.skipped_items || result.hard_link_duplicates || result.symlink_count" class="accuracy-note">
         <AppIcon name="shield" :size="18" />
         <p>
           <strong>统计边界清楚可见</strong>
-          <span v-if="allocationDifference">逻辑大小比已分配空间多 {{ formatBytes(allocationDifference) }}；稀疏文件、压缩或云占位可能造成差异。</span>
           <span>已避免重复计算 {{ formatCount(result.hard_link_duplicates) }} 个硬链接，未跟随 {{ formatCount(result.symlink_count) }} 个符号链接。</span>
           <span v-if="result.skipped_items">有 {{ formatCount(result.skipped_items) }} 个条目无法读取，当前结果不包含它们。</span>
         </p>
@@ -557,41 +667,80 @@ onBeforeUnmount(() => {
 
       <section class="directory-section">
         <header class="directory-toolbar">
-          <div><h2>大文件所在目录</h2><p>已忽略 {{ formatCount(result.ignored_file_count) }} 个小文件，让结果更聚焦</p></div>
+          <div><h2>{{ listMode === "files" ? "整个扫描范围的大文件" : "当前文件夹 · 从大到小" }}</h2><p>已忽略 {{ formatCount(result.ignored_file_count) }} 个小文件，让结果更聚焦</p></div>
           <div class="list-controls">
-            <label class="search-field"><AppIcon name="search" :size="15" /><input v-model="query" type="search" placeholder="搜索当前目录"></label>
+            <button type="button" :class="['mode-button', { active: listMode === 'directory' }]" @click="listMode = 'directory'; query = ''">当前目录</button>
+            <button type="button" :class="['mode-button', { active: listMode === 'files' }]" @click="listMode = 'files'; query = ''">大文件排行</button>
+            <label class="search-field"><AppIcon name="search" :size="15" /><input v-model="query" type="search" :placeholder="listMode === 'files' ? '搜索整个范围的文件' : '搜索当前目录'"></label>
             <select v-model="sortKey" aria-label="目录排序方式">
-              <option value="logical">按逻辑大小</option>
-              <option value="allocated">按实际分配</option>
+              <option value="allocated">按磁盘占用</option>
               <option value="name">按名称</option>
             </select>
           </div>
         </header>
 
+      <aside v-if="selectedEntry" ref="selectedFileElement" class="selected-file" aria-label="所选文件详情">
+        <div><strong>{{ selectedEntry.name }} · {{ formatBytes(selectedEntry.allocated_size) }}</strong><p>{{ selectedEntry.path }}</p></div>
+        <button type="button" class="secondary-button" @click="browseDirectory(selectedEntry.path.slice(0, selectedEntry.path.lastIndexOf('/')) || '/')">查看所在目录</button>
+        <button type="button" class="secondary-button" @click="revealInFinder(selectedEntry.path)">在 Finder 中显示</button>
+        <button type="button" class="secondary-button" @click="selectedEntry = null">关闭</button>
+      </aside>
+
         <div class="directory-table" role="table" aria-label="目录占用明细">
           <div class="directory-row table-head" role="row">
-            <span role="columnheader">文件夹或文件</span><span role="columnheader">逻辑大小</span><span role="columnheader">实际分配</span><span role="columnheader">内容</span><span role="columnheader"></span>
+            <span role="columnheader">文件夹或文件</span><span role="columnheader">磁盘占用</span><span role="columnheader">内容</span><span role="columnheader">操作</span>
           </div>
-          <button v-for="entry in entries" :key="entry.path" type="button" class="directory-row" role="row" @click="openEntry(entry)">
-            <span class="entry-name" role="cell">
-              <span class="entry-icon"><AppIcon :name="entry.is_dir ? 'folder' : 'file'" :size="19" /></span>
-              <span><strong>{{ entry.name }}</strong><small>{{ formatDate(entry.modified_at) }}<b v-if="entry.is_package">包目录</b><b v-if="entry.is_cloud_placeholder">云占位</b></small></span>
+          <div v-for="entry in entries.slice(0, 200)" :key="entry.path" class="directory-row" role="row">
+            <span role="cell" class="entry-name-cell">
+              <button type="button" class="entry-name" :aria-label="`${entry.is_dir ? '查看文件夹' : '查看文件'} ${entry.name}`" @click="openEntry(entry)">
+                <span class="entry-icon"><AppIcon :name="entry.is_dir ? 'folder' : 'file'" :size="17" /></span>
+                <span><strong>{{ entry.name }}<b v-if="entry.is_package">包目录</b><b v-if="entry.is_cloud_placeholder">云占位</b></strong><small v-if="listMode === 'files'">{{ entry.path }}</small></span>
+                <AppIcon v-if="entry.is_dir" name="chevron" :size="13" />
+              </button>
             </span>
-            <span class="entry-size" role="cell"><strong>{{ formatBytes(entry.logical_size) }}</strong><small>{{ percentage(entry) }}</small></span>
-            <span class="entry-allocation" role="cell">{{ formatBytes(entry.allocated_size) }}</span>
+            <span class="entry-size" role="cell"><strong>{{ formatBytes(entry.allocated_size) }}</strong><small>{{ percentage(entry) }}</small></span>
             <span class="entry-count" role="cell">{{ formatCount(entry.file_count) }} 个文件</span>
-            <span class="entry-action" role="cell"><AppIcon :name="entry.is_dir && !entry.is_package ? 'chevron' : 'eye'" :size="17" /></span>
-          </button>
+            <span class="entry-actions" role="cell">
+              <button type="button" class="row-action" :aria-label="`在 Finder 中显示 ${entry.name}`" title="在 Finder 中显示" @click="revealInFinder(entry.path)"><AppIcon name="eye" :size="17" /></button>
+              <button type="button" class="row-action trash-action" :disabled="deleting" :aria-label="`删除 ${entry.name}`" title="删除 · 移入废纸篓" @click="requestTrash(entry)"><AppIcon name="trash" :size="17" /></button>
+            </span>
+          </div>
+          <div v-if="entries.length > 200" class="no-results">显示最大的 200 项，共 {{ formatCount(entries.length) }} 项；搜索可定位其余内容。</div>
           <div v-if="!entries.length" class="no-results">没有符合搜索条件的项目</div>
         </div>
       </section>
 
-      <p class="method-note">本次只展示不小于 {{ formatThreshold(result.minimum_file_size) }} 的文件；被忽略的小文件合计 {{ formatBytes(result.ignored_logical_size) }}。逻辑大小用于比较目录占用，APFS 克隆、压缩和共享块仍不代表删除后必然增加的可用空间。</p>
+      <p class="method-note">本次按磁盘占用筛选不小于 {{ formatThreshold(result.minimum_file_size) }} 的文件。占用来自文件系统的已分配空间；APFS 克隆和快照可能共享或保留数据块，删除后可释放空间不一定等于此数值。</p>
     </template>
+    <dialog ref="trashDialog" class="trash-dialog" aria-labelledby="trash-title" aria-describedby="trash-description" @cancel.prevent="cancelTrash">
+      <template v-if="pendingTrash">
+        <h2 id="trash-title">将“{{ pendingTrash.name }}”移入废纸篓？</h2>
+        <p id="trash-description">{{ pendingTrash.is_dir ? '这个文件夹及其全部内容（包括未显示的小文件）都会移入废纸篓。' : '这个文件将移入废纸篓。' }}可从废纸篓恢复。</p>
+        <p class="trash-path">{{ pendingTrash.path }}</p>
+        <p class="trash-size">当前结果中的磁盘占用：{{ formatBytes(pendingTrash.allocated_size) }}</p>
+        <p v-if="!isNativeRuntime" class="demo-trash-note">预览模式：仅模拟移除，不会操作本机文件。</p>
+        <p v-if="trashError" class="error-banner" role="alert">{{ trashError }}</p>
+        <div class="trash-dialog-actions">
+          <button type="button" class="secondary-button" :disabled="deleting" autofocus @click="cancelTrash">取消</button>
+          <button type="button" class="primary-button danger-button" :disabled="deleting" @click="confirmTrash">{{ deleting ? '正在移入废纸篓…' : '确认移入废纸篓' }}</button>
+        </div>
+      </template>
+    </dialog>
+
   </section>
 </template>
 
 <style scoped>
+.partial-banner { padding: 12px 16px; border-radius: 10px; color: var(--accent-strong); background: var(--accent-soft); font-size: 12px; }
+.selected-file { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.selected-file > div { flex: 1; min-width: 0; }
+.selected-file p { overflow-wrap: anywhere; color: var(--text-soft); font-size: 11px; }
+.mode-button { padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-soft); font-size: 11px; }
+.mode-button.active { color: var(--accent-strong); background: var(--accent-soft); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.summary-strip strong, .entry-size, .live-metrics strong { font-variant-numeric: tabular-nums; }
+.list-controls { flex-wrap: wrap; }
+
 .space-page { max-width: 1240px; margin: 0 auto; padding-top: 34px; }
 .space-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 24px; }
 .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: .09em; }
@@ -627,37 +776,31 @@ onBeforeUnmount(() => {
 .live-metrics small { color: var(--text-faint); font-size: 9px; font-weight: 750; }
 .live-metrics strong { margin: 3px 0 1px; font-size: 18px; font-style: normal; letter-spacing: -.025em; }
 .live-metrics em { color: var(--text-faint); font-size: 8px; font-style: normal; }
-.live-puzzle { position: relative; min-height: 390px; padding: 17px; }
-.live-tile-grid { display: grid; grid-template-columns: repeat(6, 1fr); grid-template-rows: repeat(4, 82px); gap: 6px; min-height: 346px; }
-.live-tile { display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; padding: 15px; overflow: hidden; border-radius: 9px; color: #fff; background: var(--accent); }
-.live-tile:nth-child(2) { color: #fff; background: color-mix(in srgb, var(--accent) 78%, var(--surface)); }
-.live-tile:nth-child(3) { color: var(--text); background: color-mix(in srgb, var(--accent) 48%, var(--surface)); }
-.live-tile:nth-child(4) { color: var(--text); background: color-mix(in srgb, var(--accent) 30%, var(--surface)); }
-.live-tile:nth-child(n+5) { color: var(--text-soft); background: var(--surface-strong); }
-.live-tile span, .live-tile strong, .live-tile small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.live-tile span { font-size: 10px; font-weight: 750; }
-.live-tile strong { margin-top: 4px; font-size: 18px; letter-spacing: -.025em; }
-.live-tile small { margin-top: 2px; font-size: 8px; opacity: .72; }
-.live-tile.tile-1 { grid-column: span 3; grid-row: span 4; }
-.live-tile.tile-2 { grid-column: span 2; grid-row: span 3; }
-.live-tile.tile-3 { grid-column: span 1; grid-row: span 2; }
-.live-tile.tile-4 { grid-column: span 1; grid-row: span 2; }
-.live-tile.tile-5, .live-tile.tile-6 { grid-column: span 1; grid-row: span 1; }
-.live-tile.tile-7, .live-tile.tile-8 { grid-column: span 2; grid-row: span 1; }
-.puzzle-tile-enter-active { transition: opacity 220ms ease, transform 260ms cubic-bezier(.2,.85,.35,1.15); }
-.puzzle-tile-enter-from { opacity: 0; transform: scale(.72) translateY(12px); }
-.puzzle-placeholder { position: absolute; z-index: 1; inset: 17px 17px 43px; display: grid; grid-template-columns: 1.7fr 1.05fr .75fr; grid-template-rows: 1fr .72fr; gap: 6px; }
+.live-puzzle { position: relative; }
+.live-treemap { position: relative; width: 100%; height: 330px; overflow: hidden; background: var(--surface-strong); }
+.live-space-tile { position: absolute; display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 0; overflow: hidden; padding: 8px; border: 2px solid var(--surface); color: #fff; background: var(--accent-strong); }
+.live-space-tile span, .live-space-tile strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-space-tile span { font-size: 12px; font-weight: 650; }
+.live-space-tile strong { margin-top: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.live-color-1 { background: var(--accent); }
+.live-color-2 { color: var(--text); background: color-mix(in srgb, var(--accent) 55%, var(--surface)); }
+.live-color-3 { color: var(--text); background: color-mix(in srgb, var(--accent) 38%, var(--surface)); }
+.live-color-4 { color: var(--text); background: color-mix(in srgb, var(--accent) 25%, var(--surface)); }
+.live-color-5 { color: var(--text); background: var(--accent-soft); }
+.compact-tile { padding: 0; }
+.compact-tile span, .compact-tile strong { display: none; }
+.puzzle-placeholder { position: absolute; z-index: 1; inset: 0; display: grid; grid-template-columns: 1.7fr 1.05fr .75fr; grid-template-rows: 1fr .72fr; gap: 6px; }
 .puzzle-placeholder > span { border-radius: 9px; background: var(--surface-strong); animation: tile-breathe 1.25s ease-in-out infinite alternate; }
 .puzzle-placeholder > span:nth-child(n+7) { display: none; }
 .puzzle-placeholder > span:first-child { grid-row: 1 / 3; }
-.puzzle-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 3px 0; color: var(--text-faint); font-size: 9px; }
+.puzzle-caption { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 17px; color: var(--text-faint); font-size: 9px; }
 .puzzle-caption strong { color: var(--accent-strong); font-size: 9px; }
 .stopped-state { display: grid; place-items: center; min-height: 360px; padding: 40px; border: 1px solid var(--border); border-radius: 18px; color: var(--text-faint); background: var(--surface); text-align: center; }
 .stopped-state > strong { margin-top: 12px; color: var(--text); font-size: 15px; }
 .stopped-state p { margin: 5px 0 18px; font-size: 10px; }
 @keyframes scan-pulse { 65%, 100% { box-shadow: 0 0 0 9px transparent; } }
 @keyframes tile-breathe { from { opacity: .45; transform: scale(.985); } to { opacity: .92; transform: scale(1); } }
-.summary-strip { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); box-shadow: var(--shadow-soft); }
+.summary-strip { display: grid; grid-template-columns: repeat(3, 1fr); margin-bottom: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); box-shadow: var(--shadow-soft); }
 .summary-strip > div { min-width: 0; padding: 16px 18px; border-right: 1px solid var(--border); }
 .summary-strip > div:last-child { border-right: 0; }
 .summary-strip small, .summary-strip strong, .summary-strip span { display: block; }
@@ -687,22 +830,34 @@ onBeforeUnmount(() => {
 .search-field input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; }
 .list-controls select { min-height: 35px; padding: 0 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-soft); background: var(--surface); font-size: 10px; }
 .directory-table { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow-soft); }
-.directory-row { display: grid; grid-template-columns: minmax(220px, 1.7fr) minmax(110px, .65fr) minmax(100px, .65fr) minmax(105px, .65fr) 32px; align-items: center; gap: 12px; width: 100%; min-height: 62px; padding: 9px 13px; border: 0; border-bottom: 1px solid var(--border); color: var(--text); background: transparent; text-align: left; }
-button.directory-row:hover { background: var(--surface-soft); }
+.directory-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(130px, .45fr) 90px 76px; align-items: center; gap: 12px; width: 100%; min-height: 46px; padding: 5px 13px; border: 0; border-bottom: 1px solid var(--border); color: var(--text); background: transparent; text-align: left; }
+.directory-row:not(.table-head):hover { background: var(--surface-soft); }
 .directory-row:last-of-type { border-bottom: 0; }
 .table-head { min-height: 36px; color: var(--text-faint); background: var(--surface-soft); font-size: 9px; font-weight: 800; letter-spacing: .035em; }
-.entry-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.entry-icon { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }
+.entry-name { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 0; border: 0; color: var(--text); background: transparent; text-align: left; }
+.entry-name-cell { min-width: 0; }
+.entry-icon { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }
 .entry-name > span { min-width: 0; }
 .entry-name strong, .entry-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entry-name strong { font-size: 11px; }
 .entry-name small { margin-top: 3px; color: var(--text-faint); font-size: 9px; }
 .entry-name b { margin-left: 6px; padding: 2px 5px; border-radius: 4px; color: var(--accent-strong); background: var(--accent-soft); font-size: 8px; }
-.entry-size strong, .entry-size small { display: block; }
+.entry-size { display: flex; align-items: baseline; gap: 8px; }
 .entry-size strong { font-size: 11px; }
-.entry-size small { margin-top: 2px; color: var(--text-faint); font-size: 9px; }
+.entry-size small { color: var(--text-faint); font-size: 9px; }
 .entry-allocation, .entry-count { color: var(--text-soft); font-size: 10px; }
-.entry-action { display: grid; place-items: center; color: var(--text-faint); }
+ .entry-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.row-action { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 7px; color: var(--text-soft); background: transparent; }
+.row-action:hover { color: var(--accent-strong); background: var(--accent-soft); }
+.trash-action:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.trash-dialog { width: min(480px, calc(100vw - 40px)); padding: 24px; border: 1px solid var(--border); border-radius: 16px; color: var(--text); background: var(--surface); box-shadow: var(--shadow); }
+.trash-dialog::backdrop { background: rgba(40, 32, 27, .38); }
+.trash-dialog h2 { margin: 0 0 12px; font-size: 18px; overflow-wrap: anywhere; }
+.trash-dialog p { font-size: 12px; line-height: 1.65; }
+.trash-path { padding: 10px; border-radius: 8px; overflow-wrap: anywhere; color: var(--text-soft); background: var(--surface-soft); }
+.trash-size, .demo-trash-note { color: var(--text-soft); }
+.trash-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.danger-button { background: var(--danger); border-color: var(--danger); }
 .no-results { padding: 42px; color: var(--text-faint); text-align: center; font-size: 11px; }
 .method-note { max-width: 850px; margin: 16px auto 0; color: var(--text-faint); font-size: 9px; line-height: 1.65; text-align: center; }
 @media (max-width: 1080px) {
@@ -712,7 +867,7 @@ button.directory-row:hover { background: var(--surface-soft); }
   .summary-strip { grid-template-columns: repeat(2, 1fr); }
   .summary-strip > div:nth-child(2) { border-right: 0; }
   .summary-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
-  .directory-row { grid-template-columns: minmax(200px, 1.5fr) 100px 100px 32px; }
-  .directory-row > :nth-child(4) { display: none; }
+  .directory-row { grid-template-columns: minmax(160px, 1fr) 130px 76px; }
+  .directory-row > :nth-child(3) { display: none; }
 }
 </style>

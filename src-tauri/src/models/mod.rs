@@ -127,7 +127,7 @@ pub struct SpaceMapResult {
     pub root_path: String,
     /// 用于界面展示的路径（用户目录会缩写为 ~）
     pub display_path: String,
-    /// 已读取文件的逻辑大小；矩形图按此数值计算面积
+    /// 已读取文件的逻辑大小，仅供内部汇总兼容
     pub logical_size: u64,
     /// 文件系统报告的已分配块大小（APFS 克隆/压缩仍可能共享物理块）
     pub allocated_size: u64,
@@ -141,7 +141,7 @@ pub struct SpaceMapResult {
     pub ignored_file_count: u64,
     /// 被阈值忽略的小文件逻辑大小合计
     pub ignored_logical_size: u64,
-    /// 纳入结果的最小文件大小
+    /// 纳入结果的最小磁盘已分配空间
     pub minimum_file_size: u64,
     /// 根目录的直接子项，包含其递归汇总值
     pub entries: Vec<SpaceMapEntry>,
@@ -153,6 +153,8 @@ pub struct SpaceMapResult {
     pub symlink_count: u64,
     /// 分析耗时（毫秒）
     pub scan_duration_ms: u64,
+    /// 用户停止后的部分结果
+    pub incomplete: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -190,6 +192,8 @@ pub struct SpaceMapEntry {
     pub is_package: bool,
     /// iCloud 尚未完整下载到本机的占位条目
     pub is_cloud_placeholder: bool,
+    #[serde(default)]
+    pub children: Vec<SpaceMapEntry>,
 }
 
 // ── 扫描进度 ──

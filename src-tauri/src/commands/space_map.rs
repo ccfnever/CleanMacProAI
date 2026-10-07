@@ -2,10 +2,10 @@
 
 use crate::models::{SpaceMapEntry, SpaceMapProgress, SpaceMapResult};
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use walkdir::WalkDir;
@@ -24,15 +24,18 @@ const MAX_PROGRESS_ENTRIES: usize = 32;
 #[derive(Default)]
 pub struct SpaceMapState {
     generation: Arc<AtomicU64>,
+    stopped_generation: Arc<AtomicU64>,
     progress: Arc<Mutex<SpaceMapProgress>>,
 }
 
 #[derive(Clone)]
 struct ScanContext {
     generation: Arc<AtomicU64>,
+    stopped_generation: Arc<AtomicU64>,
     request_generation: u64,
     progress: Arc<Mutex<SpaceMapProgress>>,
     seen_hard_links: Arc<Mutex<HashSet<(u64, u64)>>>,
+    files: Arc<Mutex<Vec<SpaceMapEntry>>>,
     started_at: Instant,
 }
 
@@ -71,14 +74,19 @@ pub async fn analyze_space_map(
     let request_generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
     let context = ScanContext {
         generation: Arc::clone(&state.generation),
+        stopped_generation: Arc::clone(&state.stopped_generation),
         request_generation,
         progress: Arc::clone(&state.progress),
         seen_hard_links: Arc::new(Mutex::new(HashSet::new())),
+        files: Arc::new(Mutex::new(Vec::new())),
         started_at: Instant::now(),
     };
 
     {
         let mut progress = lock(&state.progress);
+        if state.generation.load(Ordering::Relaxed) != request_generation {
+            return Err("空间分析已取消".to_string());
+        }
         *progress = SpaceMapProgress {
             is_scanning: true,
             root_path: requested.to_string_lossy().into_owned(),
@@ -95,11 +103,13 @@ pub async fn analyze_space_map(
     .await
     .map_err(|error| format!("空间分析任务异常结束：{error}"))?;
 
-    if context.generation.load(Ordering::Relaxed) == request_generation {
+    {
         let mut progress = lock(&context.progress);
-        progress.is_scanning = false;
-        progress.current_path = None;
-        progress.elapsed_ms = context.started_at.elapsed().as_millis() as u64;
+        if context.generation.load(Ordering::Relaxed) == request_generation {
+            progress.is_scanning = false;
+            progress.current_path = None;
+            progress.elapsed_ms = context.started_at.elapsed().as_millis() as u64;
+        }
     }
     scan_result
 }
@@ -109,8 +119,8 @@ pub fn get_space_map_progress(state: tauri::State<'_, SpaceMapState>) -> SpaceMa
     let mut snapshot = lock(&state.progress).clone();
     snapshot.entries.sort_by(|left, right| {
         right
-            .logical_size
-            .cmp(&left.logical_size)
+            .allocated_size
+            .cmp(&left.allocated_size)
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     snapshot.entries.truncate(MAX_PROGRESS_ENTRIES);
@@ -119,8 +129,9 @@ pub fn get_space_map_progress(state: tauri::State<'_, SpaceMapState>) -> SpaceMa
 
 #[tauri::command]
 pub fn cancel_space_map(state: tauri::State<'_, SpaceMapState>) {
-    state.generation.fetch_add(1, Ordering::Relaxed);
-    lock(&state.progress).is_scanning = false;
+    state
+        .stopped_generation
+        .store(state.generation.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -148,6 +159,41 @@ pub async fn choose_space_map_directory() -> Result<Option<String>, String> {
     .map_err(|error| format!("文件夹选择任务异常结束：{error}"))?
 }
 
+#[tauri::command]
+pub async fn trash_space_map_entry(path: String, root_path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        trash_scanned_entry(Path::new(&root_path), Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("移入废纸篓任务异常：{error}"))?
+}
+
+fn trash_scanned_entry(root: &Path, target: &Path) -> Result<(), String> {
+    let target = validate_trash_target(root, target)?;
+    super::trash_support::move_to_trash(&target).map_err(|error| format!("无法移入废纸篓：{error}"))
+}
+
+fn validate_trash_target(root: &Path, target: &Path) -> Result<PathBuf, String> {
+    if !root.is_absolute() || !target.is_absolute() {
+        return Err("路径必须是绝对路径".to_string());
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("扫描范围无法访问：{error}"))?;
+    let metadata =
+        fs::symlink_metadata(target).map_err(|error| format!("文件已不存在或无法访问：{error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("不能删除扫描结果之外的符号链接".to_string());
+    }
+    let target = target
+        .canonicalize()
+        .map_err(|error| format!("路径无法访问：{error}"))?;
+    if target == root || !target.starts_with(&root) {
+        return Err("只能移除扫描范围内的子项，不能移除扫描根目录".to_string());
+    }
+    Ok(target)
+}
+
 fn analyze_directory(
     requested: &Path,
     minimum_file_size: u64,
@@ -162,61 +208,52 @@ fn analyze_directory(
 
     {
         let mut progress = lock(&context.progress);
+        if context.generation.load(Ordering::Relaxed) != context.request_generation {
+            return Err("空间分析已取消".to_string());
+        }
         progress.root_path = root.to_string_lossy().into_owned();
         progress.display_path = display_path(&root);
     }
 
-    let mut root_read_errors = 0_u64;
-    let children = fs::read_dir(&root)
-        .map_err(|error| format!("无法读取 {}：{error}", root.display()))?
-        .filter_map(|entry| match entry {
-            Ok(entry) => Some(entry.path()),
-            Err(_) => {
-                root_read_errors += 1;
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    if root_read_errors > 0 {
-        lock(&context.progress).skipped_items += root_read_errors;
-    }
-
-    let next_child = AtomicUsize::new(0);
-    let worker_count = available_worker_count(children.len());
+    // Pull direct children lazily: publish early and avoid retaining every root path.
+    let children = Mutex::new(
+        fs::read_dir(&root).map_err(|error| format!("无法读取 {}：{error}", root.display()))?,
+    );
+    let worker_count = available_worker_count(MAX_SCAN_WORKERS);
     std::thread::scope(|scope| {
         for _ in 0..worker_count {
-            let next_child = &next_child;
             let children = &children;
             let context = context.clone();
             scope.spawn(move || loop {
                 if is_cancelled(&context) {
                     break;
                 }
-                let index = next_child.fetch_add(1, Ordering::Relaxed);
-                let Some(child) = children.get(index) else {
-                    break;
-                };
-                scan_direct_child(child, minimum_file_size, &context);
+                let child = lock(children).next();
+                match child {
+                    Some(Ok(child)) => {
+                        scan_direct_child(&child.path(), minimum_file_size, &context)
+                    }
+                    Some(Err(_)) => {
+                        let mut progress = lock(&context.progress);
+                        if context.generation.load(Ordering::Relaxed) == context.request_generation
+                        {
+                            progress.skipped_items += 1;
+                        }
+                    }
+                    None => break,
+                }
             });
         }
     });
 
-    if is_cancelled(context) {
-        return Err("空间分析已取消".to_string());
-    }
-
-    let snapshot = lock(&context.progress).clone();
-    let mut entries = snapshot
-        .entries
-        .into_iter()
-        .filter(|entry| entry.logical_size > 0)
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| {
-        right
-            .logical_size
-            .cmp(&left.logical_size)
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-    });
+    let snapshot = {
+        let progress = lock(&context.progress);
+        if context.generation.load(Ordering::Relaxed) != context.request_generation {
+            return Err("空间分析已取消".to_string());
+        }
+        progress.clone()
+    };
+    let entries = build_tree(&root, std::mem::take(&mut *lock(&context.files)));
 
     Ok(SpaceMapResult {
         root_path: root.to_string_lossy().into_owned(),
@@ -234,32 +271,43 @@ fn analyze_directory(
         hard_link_duplicates: snapshot.hard_link_duplicates,
         symlink_count: snapshot.symlink_count,
         scan_duration_ms: context.started_at.elapsed().as_millis() as u64,
+        incomplete: is_cancelled(context),
     })
 }
 
-fn scan_direct_child(
-    direct_child: &Path,
-    minimum_file_size: u64,
-    context: &ScanContext,
-) {
+fn scan_direct_child(direct_child: &Path, minimum_file_size: u64, context: &ScanContext) {
     let metadata = match fs::symlink_metadata(direct_child) {
         Ok(metadata) => metadata,
         Err(_) => {
-            lock(&context.progress).skipped_items += 1;
+            let mut progress = lock(&context.progress);
+            if context.generation.load(Ordering::Relaxed) == context.request_generation {
+                progress.skipped_items += 1;
+            }
             return;
         }
     };
     if metadata.file_type().is_symlink() {
-        lock(&context.progress).symlink_count += 1;
+        let mut progress = lock(&context.progress);
+        if context.generation.load(Ordering::Relaxed) == context.request_generation {
+            progress.symlink_count += 1;
+        }
         return;
     }
 
     let entry_seed = make_entry(direct_child, &metadata);
     let mut delta = ProgressDelta::default();
     let mut last_publish = Instant::now();
+    let mut files = Vec::new();
 
     if metadata.is_file() {
         inspect_file(&metadata, minimum_file_size, context, &mut delta);
+        if delta.entry_file_count > 0 {
+            let mut file = entry_seed.clone();
+            file.logical_size = metadata.len();
+            file.allocated_size = allocated_bytes(&metadata);
+            file.file_count = 1;
+            lock(&context.files).push(file);
+        }
         delta.inspected_items += 1;
         publish_delta(context, &entry_seed, &mut delta, direct_child);
         return;
@@ -274,7 +322,7 @@ fn scan_direct_child(
         .into_iter()
     {
         if is_cancelled(context) {
-            return;
+            break;
         }
         let entry = match item {
             Ok(entry) => entry,
@@ -294,7 +342,15 @@ fn scan_direct_child(
         } else if entry.file_type().is_file() {
             match entry.metadata() {
                 Ok(file_metadata) => {
-                    inspect_file(&file_metadata, minimum_file_size, context, &mut delta)
+                    let previous = delta.matched_file_count;
+                    inspect_file(&file_metadata, minimum_file_size, context, &mut delta);
+                    if delta.matched_file_count > previous {
+                        let mut file = make_entry(entry.path(), &file_metadata);
+                        file.logical_size = file_metadata.len();
+                        file.allocated_size = allocated_bytes(&file_metadata);
+                        file.file_count = 1;
+                        files.push(file);
+                    }
                 }
                 Err(_) => delta.skipped_items += 1,
             }
@@ -308,6 +364,85 @@ fn scan_direct_child(
         }
     }
     publish_delta(context, &entry_seed, &mut delta, direct_child);
+    lock(&context.files).extend(files);
+}
+
+// Build ancestors only for matching files; small files need no retained metadata.
+fn build_tree(root: &Path, files: Vec<SpaceMapEntry>) -> Vec<SpaceMapEntry> {
+    let mut nodes: HashMap<PathBuf, SpaceMapEntry> = HashMap::new();
+    let mut children: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    for file in files {
+        let path = PathBuf::from(&file.path);
+        let size = file.logical_size;
+        let allocated = file.allocated_size;
+        children
+            .entry(path.parent().unwrap_or(root).to_path_buf())
+            .or_default()
+            .push(path.clone());
+        nodes.insert(path.clone(), file);
+        let mut parent = path.parent();
+        while let Some(directory) =
+            parent.filter(|directory| *directory != root && directory.starts_with(root))
+        {
+            if !nodes.contains_key(directory) {
+                children
+                    .entry(directory.parent().unwrap_or(root).to_path_buf())
+                    .or_default()
+                    .push(directory.to_path_buf());
+                nodes.insert(
+                    directory.to_path_buf(),
+                    SpaceMapEntry {
+                        name: directory
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        path: directory.to_string_lossy().into_owned(),
+                        logical_size: 0,
+                        allocated_size: 0,
+                        file_count: 0,
+                        directory_count: 0,
+                        modified_at: None,
+                        is_dir: true,
+                        is_package: is_package_directory(directory),
+                        is_cloud_placeholder: false,
+                        children: Vec::new(),
+                    },
+                );
+            }
+            let node = nodes.get_mut(directory).unwrap();
+            node.logical_size = node.logical_size.saturating_add(size);
+            node.allocated_size = node.allocated_size.saturating_add(allocated);
+            node.file_count += 1;
+            parent = directory.parent();
+        }
+    }
+    fn take_children(
+        path: &Path,
+        nodes: &mut HashMap<PathBuf, SpaceMapEntry>,
+        children: &mut HashMap<PathBuf, Vec<PathBuf>>,
+    ) -> Vec<SpaceMapEntry> {
+        let mut result = Vec::new();
+        for child in children.remove(path).unwrap_or_default() {
+            if let Some(mut node) = nodes.remove(&child) {
+                node.children = take_children(&child, nodes, children);
+                node.directory_count = node
+                    .children
+                    .iter()
+                    .filter(|item| item.is_dir)
+                    .map(|item| 1 + item.directory_count)
+                    .sum();
+                result.push(node);
+            }
+        }
+        result.sort_by(|a, b| {
+            b.allocated_size
+                .cmp(&a.allocated_size)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        result
+    }
+    take_children(root, &mut nodes, &mut children)
 }
 
 fn inspect_file(
@@ -323,13 +458,13 @@ fn inspect_file(
     }
 
     let size = metadata.len();
-    if size < minimum_file_size {
+    let allocated = allocated_bytes(metadata);
+    if allocated < minimum_file_size {
         delta.ignored_file_count += 1;
         delta.ignored_logical_size = delta.ignored_logical_size.saturating_add(size);
         return;
     }
 
-    let allocated = allocated_bytes(metadata);
     delta.matched_file_count += 1;
     delta.matched_logical_size = delta.matched_logical_size.saturating_add(size);
     delta.matched_allocated_size = delta.matched_allocated_size.saturating_add(allocated);
@@ -348,7 +483,7 @@ fn publish_delta(
         return;
     }
     let mut progress = lock(&context.progress);
-    if is_cancelled(context) {
+    if context.generation.load(Ordering::Relaxed) != context.request_generation {
         *delta = ProgressDelta::default();
         return;
     }
@@ -371,8 +506,12 @@ fn publish_delta(
     progress.symlink_count += delta.symlink_count;
     progress.elapsed_ms = context.started_at.elapsed().as_millis() as u64;
 
-    if delta.entry_logical_size > 0 || delta.entry_directory_count > 0 {
-        if let Some(entry) = progress.entries.iter_mut().find(|entry| entry.path == seed.path) {
+    if delta.entry_allocated_size > 0 {
+        if let Some(entry) = progress
+            .entries
+            .iter_mut()
+            .find(|entry| entry.path == seed.path)
+        {
             entry.logical_size = entry.logical_size.saturating_add(delta.entry_logical_size);
             entry.allocated_size = entry
                 .allocated_size
@@ -407,6 +546,7 @@ fn make_entry(path: &Path, metadata: &Metadata) -> SpaceMapEntry {
         is_dir: metadata.is_dir(),
         is_package: metadata.is_dir() && is_package_directory(path),
         is_cloud_placeholder: is_cloud_placeholder(path, metadata),
+        children: Vec::new(),
     }
 }
 
@@ -419,6 +559,7 @@ fn available_worker_count(task_count: usize) -> usize {
 
 fn is_cancelled(context: &ScanContext) -> bool {
     context.generation.load(Ordering::Relaxed) != context.request_generation
+        || context.stopped_generation.load(Ordering::Relaxed) == context.request_generation
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -450,18 +591,12 @@ fn allocated_bytes(metadata: &Metadata) -> u64 {
 }
 
 #[cfg(unix)]
-fn is_duplicate_hard_link(
-    metadata: &Metadata,
-    seen: &Mutex<HashSet<(u64, u64)>>,
-) -> bool {
+fn is_duplicate_hard_link(metadata: &Metadata, seen: &Mutex<HashSet<(u64, u64)>>) -> bool {
     metadata.nlink() > 1 && !lock(seen).insert((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(not(unix))]
-fn is_duplicate_hard_link(
-    _metadata: &Metadata,
-    _seen: &Mutex<HashSet<(u64, u64)>>,
-) -> bool {
+fn is_duplicate_hard_link(_metadata: &Metadata, _seen: &Mutex<HashSet<(u64, u64)>>) -> bool {
     false
 }
 
@@ -533,9 +668,11 @@ mod tests {
     fn test_context(generation: u64) -> ScanContext {
         ScanContext {
             generation: Arc::new(AtomicU64::new(generation)),
+            stopped_generation: Arc::new(AtomicU64::new(0)),
             request_generation: 1,
             progress: Arc::new(Mutex::new(SpaceMapProgress::default())),
             seen_hard_links: Arc::new(Mutex::new(HashSet::new())),
+            files: Arc::new(Mutex::new(Vec::new())),
             started_at: Instant::now(),
         }
     }
@@ -545,11 +682,14 @@ mod tests {
         let root = fixture_dir("threshold");
         fs::create_dir_all(root.join("Projects/build")).expect("create dirs");
         fs::write(root.join("Projects/small.txt"), vec![1_u8; 11]).expect("write small");
-        fs::write(root.join("Projects/build/large.bin"), vec![2_u8; 29]).expect("write large");
+        fs::write(root.join("Projects/build/large.bin"), vec![2_u8; 8192]).expect("write large");
         fs::write(root.join("readme.md"), vec![3_u8; 7]).expect("write readme");
 
-        let result = analyze_directory(&root, 20, &test_context(1)).expect("analyze fixture");
-        assert_eq!(result.logical_size, 29);
+        let threshold =
+            allocated_bytes(&fs::metadata(root.join("Projects/small.txt")).unwrap()) + 1;
+        let result =
+            analyze_directory(&root, threshold, &test_context(1)).expect("analyze fixture");
+        assert_eq!(result.logical_size, 8192);
         assert_eq!(result.file_count, 1);
         assert_eq!(result.scanned_file_count, 3);
         assert_eq!(result.ignored_file_count, 2);
@@ -621,6 +761,7 @@ mod tests {
             is_dir: true,
             is_package: false,
             is_cloud_placeholder: false,
+            children: Vec::new(),
         };
         let mut delta = ProgressDelta {
             matched_file_count: 1,
@@ -655,4 +796,104 @@ mod tests {
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
+    #[test]
+    fn retains_nested_results_and_sorted_files_without_rescanning() {
+        let root = fixture_dir("tree");
+        fs::create_dir_all(root.join("A/B")).unwrap();
+        fs::write(root.join("A/B/larger.bin"), vec![0; 80]).unwrap();
+        fs::write(root.join("A/B/smaller.bin"), vec![0; 40]).unwrap();
+        fs::write(root.join("A/direct.bin"), vec![0; 30]).unwrap();
+        let result = analyze_directory(&root, 20, &test_context(1)).unwrap();
+        let a = &result.entries[0];
+        assert_eq!(a.logical_size, 150);
+        assert_eq!(a.file_count, 3);
+        assert_eq!(a.children[0].name, "B");
+        assert_eq!(a.children[0].logical_size, 120);
+        assert_eq!(a.children[0].children[0].name, "larger.bin");
+        assert_eq!(
+            a.children
+                .iter()
+                .map(|child| child.logical_size)
+                .sum::<u64>(),
+            a.logical_size
+        );
+        assert!(!result.incomplete);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stopped_workers_flush_pending_results_and_keep_all_entries() {
+        let root = fixture_dir("stopped").canonicalize().unwrap();
+        for index in 0..40 {
+            fs::write(root.join(format!("{index}.bin")), vec![0; 30]).unwrap();
+        }
+        let context = test_context(1);
+        // Retain scanned data, then stop before the next traversal.
+        for item in fs::read_dir(&root).unwrap() {
+            scan_direct_child(&item.unwrap().path(), 20, &context);
+        }
+        context.stopped_generation.store(1, Ordering::Relaxed);
+        let result = analyze_directory(&root, 20, &context).unwrap();
+        assert!(result.incomplete);
+        assert_eq!(result.entries.len(), 40); // progress preview is capped at 32
+        assert_eq!(result.logical_size, 1200);
+        let seed = make_entry(
+            &root.join("pending.bin"),
+            &fs::metadata(root.join("0.bin")).unwrap(),
+        );
+        let mut delta = ProgressDelta {
+            inspected_items: 1,
+            matched_file_count: 1,
+            matched_logical_size: 50,
+            entry_logical_size: 50,
+            entry_file_count: 1,
+            ..ProgressDelta::default()
+        };
+        publish_delta(&context, &seed, &mut delta, &root);
+        assert_eq!(lock(&context.progress).matched_logical_size, 1250);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn sparse_files_are_filtered_by_allocated_space() {
+        let root = fixture_dir("allocated-threshold");
+        let file = fs::File::create(root.join("sparse.bin")).unwrap();
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        let result = analyze_directory(&root, 1024 * 1024, &test_context(1)).unwrap();
+        assert_eq!(result.file_count, 0);
+        assert_eq!(result.allocated_size, 0);
+        assert!(result.entries.is_empty());
+        assert_eq!(result.ignored_file_count, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn trash_target_must_be_an_existing_child_of_scope() {
+        let root = fixture_dir("trash-scope");
+        let outside = fixture_dir("trash-outside");
+        fs::write(root.join("file.bin"), [1]).unwrap();
+        fs::write(outside.join("file.bin"), [2]).unwrap();
+        assert!(validate_trash_target(&root, &root.join("file.bin")).is_ok());
+        assert!(validate_trash_target(&root, &root).is_err());
+        assert!(validate_trash_target(&root, &outside.join("file.bin")).is_err());
+        assert!(validate_trash_target(&root, &root.join("missing")).is_err());
+        assert!(outside.join("file.bin").exists());
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn moves_disposable_file_and_folder_to_system_trash() {
+        let root = fixture_dir("trash-integration");
+        fs::write(root.join("disposable-test-file.bin"), [1]).unwrap();
+        fs::create_dir(root.join("disposable-test-folder")).unwrap();
+        fs::write(root.join("disposable-test-folder/child.bin"), [2]).unwrap();
+        trash_scanned_entry(&root, &root.join("disposable-test-file.bin")).unwrap();
+        trash_scanned_entry(&root, &root.join("disposable-test-folder")).unwrap();
+        assert!(!root.join("disposable-test-file.bin").exists());
+        assert!(!root.join("disposable-test-folder").exists());
+        assert!(root.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
