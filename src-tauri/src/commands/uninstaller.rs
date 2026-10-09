@@ -1,6 +1,5 @@
 /// 软件卸载 — Tauri Commands
 
-use super::trash_support::{move_application_to_trash, move_to_trash};
 use crate::models::{CleanError, CleanReport, FileInfo, InstalledApp};
 use plist::Value;
 use std::collections::HashSet;
@@ -131,13 +130,7 @@ fn uninstall_app_blocking(
 
         let size = path_size(&path);
         let count = path_count_for_report(&path);
-        let result = if path.extension().and_then(|value| value.to_str()) == Some("app")
-            && path.parent() == Some(Path::new("/Applications"))
-        {
-            move_application_to_trash(&path)
-        } else {
-            move_to_trash(&path)
-        };
+        let result = delete_uninstall_target(&path);
 
         match result {
             Ok(()) => {
@@ -160,6 +153,46 @@ fn uninstall_app_blocking(
         skipped_count,
         errors,
     })
+}
+
+fn delete_uninstall_target(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    let result = if metadata.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            #[cfg(target_os = "macos")]
+            if error.kind() == std::io::ErrorKind::PermissionDenied && !metadata.file_type().is_symlink()
+                && path.parent() == Some(Path::new("/Applications"))
+                && path.extension().and_then(|value| value.to_str()) == Some("app") {
+                return delete_application_with_authorization(path);
+            }
+            Err(error.to_string())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn delete_application_with_authorization(path: &Path) -> Result<(), String> {
+    let canonical = path.canonicalize().map_err(|error| error.to_string())?;
+    if canonical.parent() != Some(Path::new("/Applications"))
+        || canonical.extension().and_then(|value| value.to_str()) != Some("app") {
+        return Err("管理员授权仅用于 /Applications 下的应用程序".into());
+    }
+    let script = r#"
+on run argv
+    set sourcePath to item 1 of argv
+    do shell script "/bin/rm -rf -- " & quoted form of sourcePath with administrator privileges
+end run
+"#;
+    let output = Command::new("/usr/bin/osascript").args(["-e", script, "--"]).arg(&canonical)
+        .output().map_err(|error| format!("无法请求管理员授权：{error}"))?;
+    if output.status.success() && fs::symlink_metadata(&canonical).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&output.stderr);
+    if error.contains("(-128)") { return Err("管理员授权已取消".into()); }
+    Err(format!("应用删除未完成：{}", error.trim()))
 }
 
 fn resolve_app_for_uninstall(
@@ -609,6 +642,28 @@ fn is_safe_uninstall_target(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permanent_delete_removes_bundle_and_unlinks_symlinks_only() {
+        let root = std::env::temp_dir().join(format!("cleanmac-uninstall-delete-{}", std::process::id()));
+        let bundle = root.join("Disposable.app");
+        fs::create_dir_all(bundle.join("Contents")).unwrap();
+        fs::write(bundle.join("Contents/test"), "fixture").unwrap();
+        delete_uninstall_target(&bundle).unwrap();
+        assert!(!bundle.exists());
+        let retained = root.join("retained");
+        fs::write(&retained, "retain").unwrap();
+        #[cfg(unix)] {
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&retained, &link).unwrap();
+            delete_uninstall_target(&link).unwrap();
+            assert!(fs::symlink_metadata(link).is_err());
+            assert_eq!(fs::read_to_string(&retained).unwrap(), "retain");
+        }
+        delete_uninstall_target(&retained).unwrap();
+        assert!(!retained.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn quick_list_returns_before_detail_enrichment() {

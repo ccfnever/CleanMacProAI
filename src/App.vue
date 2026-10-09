@@ -10,7 +10,9 @@ import SettingsView from "./views/SettingsView.vue";
 import { useDiskStore } from "./stores/disk";
 import { useThemeStore, type ThemeName } from "./stores/theme";
 
-type ViewName = "dashboard" | "scanner" | "space-map" | "uninstaller" | "settings";
+const StartupView = defineAsyncComponent(() => import("./views/StartupView.vue"));
+
+type ViewName = "dashboard" | "scanner" | "space-map" | "uninstaller" | "startup" | "settings";
 
 const currentView = ref<ViewName>("dashboard");
 const SpaceMapView = defineAsyncComponent(() => import("./views/SpaceMapView.vue"));
@@ -24,13 +26,12 @@ const currentTitle = computed(() => ({
   scanner: "安心清理",
   "space-map": "空间地图",
   uninstaller: "应用管理",
+  startup: "启动项管理",
   settings: "外观与设置",
 })[currentView.value]);
 
-const engineLabel = computed(() => dataSource.value === "native" ? "本机引擎在线" : "预览模式");
-
 function navigate(view: string) {
-  if (["dashboard", "scanner", "space-map", "uninstaller", "settings"].includes(view)) {
+  if (["dashboard", "scanner", "space-map", "uninstaller", "startup", "settings"].includes(view)) {
     currentView.value = view as ViewName;
   }
 }
@@ -53,7 +54,7 @@ onMounted(async () => {
       <header class="topbar" data-tauri-drag-region>
         <div class="page-heading">
           <span class="page-symbol">
-            <AppIcon :name="currentView === 'scanner' ? 'shield' : currentView === 'space-map' ? 'map' : currentView === 'uninstaller' ? 'apps' : currentView === 'settings' ? 'settings' : 'home'" :size="18" />
+            <AppIcon :name="currentView === 'scanner' ? 'shield' : currentView === 'space-map' ? 'map' : currentView === 'uninstaller' ? 'apps' : currentView === 'startup' ? 'power' : currentView === 'settings' ? 'settings' : 'home'" :size="18" />
           </span>
           <div>
             <h2>{{ currentTitle }}</h2>
@@ -62,9 +63,6 @@ onMounted(async () => {
         </div>
 
         <div class="topbar-actions">
-          <span :class="['engine-chip', { native: dataSource === 'native' }]">
-            <i></i>{{ engineLabel }}
-          </span>
           <label class="theme-select" aria-label="切换主题皮肤">
             <AppIcon name="leaf" :size="15" />
             <select :value="currentTheme" @change="changeTheme">
@@ -83,6 +81,7 @@ onMounted(async () => {
         <ScannerView v-else-if="currentView === 'scanner'" key="scanner" />
         <SpaceMapView v-else-if="currentView === 'space-map'" key="space-map" />
         <UninstallerView v-else-if="currentView === 'uninstaller'" key="uninstaller" />
+        <StartupView v-else-if="currentView === 'startup'" key="startup" />
         <SettingsView v-else key="settings" />
       </Transition>
     </main>
@@ -194,15 +193,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: color-mix(in srgb, var(--app-bg) 86%, transparent);
   backdrop-filter: blur(18px);
 }
-.page-heading, .topbar-actions, .theme-select, .engine-chip { display: flex; align-items: center; }
+.page-heading, .topbar-actions, .theme-select { display: flex; align-items: center; }
 .page-heading { gap: 11px; }
 .page-symbol { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 11px; color: var(--accent); background: var(--surface); box-shadow: var(--shadow-soft); }
 .page-heading h2 { margin: 0; color: var(--text); font-size: 17px; letter-spacing: -.01em; }
 .page-heading p { margin: 2px 0 0; color: var(--text-faint); font-size: 11px; }
 .topbar-actions { gap: 9px; }
-.engine-chip { gap: 7px; min-height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-soft); background: color-mix(in srgb, var(--surface) 76%, transparent); font-size: 11px; font-weight: 700; }
-.engine-chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 14%, transparent); }
-.engine-chip.native i { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 14%, transparent); }
 .theme-select { gap: 7px; min-height: 34px; padding: 0 4px 0 10px; border: 1px solid var(--border); border-radius: 10px; color: var(--accent); background: var(--surface); }
 .theme-select select { height: 30px; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; font-weight: 700; }
 .app-notice { max-width: 1240px; margin: 14px auto 0; padding: 10px 13px; border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent); border-radius: 10px; color: var(--text); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); font-size: 12px; }

@@ -7,6 +7,7 @@ const props = withDefaults(defineProps<{ name: string; size?: number; strokeWidt
 });
 
 const paths: Record<string, string[]> = {
+  power: ["M12 3v9", "M6.3 5.7a9 9 0 1 0 11.4 0"],
   home: ["M3 10.5 12 3l9 7.5", "M5 9.5V21h14V9.5", "M9 21v-7h6v7"],
   scan: ["M4 7V4h3", "M17 4h3v3", "M20 17v3h-3", "M7 20H4v-3", "M8 12h8", "M12 8v8"],
   apps: ["M4 4h6v6H4z", "M14 4h6v6h-6z", "M4 14h6v6H4z", "M14 14h6v6h-6z"],

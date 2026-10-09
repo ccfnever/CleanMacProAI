@@ -7,6 +7,7 @@ import {
   type FileInfo,
   type InstalledApp,
 } from "../lib/demoData";
+import { useDiskStore } from "../stores/disk";
 import AppIcon from "../components/AppIcon.vue";
 import { compareApps, formatLastOpened, uniqueAppsTotalSize, type AppSort } from "../lib/appOccupancy";
 
@@ -36,6 +37,7 @@ interface RelatedGroup {
   size: number;
 }
 
+const diskStore = useDiskStore();
 const apps = ref<InstalledApp[]>([]);
 const isLoading = ref(true);
 const inspectingAppPath = ref<string | null>(null);
@@ -369,6 +371,8 @@ function toggleExpanded(app: InstalledApp) {
 }
 
 function toggleSelected(appPath: string) {
+  if (isUninstalling.value) return;
+  isConfirmingUninstall.value = false;
   const next = new Set(selectedAppPaths.value);
   if (next.has(appPath)) {
     next.delete(appPath);
@@ -387,17 +391,20 @@ async function openAppDirectory(app: InstalledApp) {
 }
 
 function selectAllVisible() {
+  if (isUninstalling.value) return;
+  isConfirmingUninstall.value = false;
   const next = new Set(selectedAppPaths.value);
   for (const app of filteredApps.value) next.add(app.app_path);
   selectedAppPaths.value = next;
 }
 
 async function uninstallSelected() {
-  if (selectedApps.value.length === 0) return;
+  if (!isConfirmingUninstall.value || selectedApps.value.length === 0 || isUninstalling.value || dataSource.value !== "native") return;
   isConfirmingUninstall.value = false;
   isUninstalling.value = true;
   uninstallReport.value = null;
   const targets = [...selectedApps.value];
+  let attemptedNativeUninstall = false;
   const removedIds = new Set<string>();
   const failedIds = new Set<string>();
   const failedDetails: string[] = [];
@@ -405,6 +412,7 @@ async function uninstallSelected() {
 
   try {
     for (const app of targets) {
+      attemptedNativeUninstall = true;
       const result = await invokeOrDemo<CleanReport>("uninstall_app", {
         cleaned_count: 0,
         freed_bytes: 0,
@@ -449,21 +457,26 @@ async function uninstallSelected() {
     );
 
     if (removedIds.size === targets.length && aggregate.errors.length === 0) {
-      notice.value = `已将 ${removedIds.size} 个应用及关联残留移入废纸篓。`;
+      notice.value = `已将 ${removedIds.size} 个应用及关联残留永久删除。`;
     } else if (removedIds.size === targets.length) {
-      notice.value = `已将 ${removedIds.size} 个应用移入废纸篓；${aggregate.errors.length} 个关联残留未能处理。`;
+      notice.value = `已将 ${removedIds.size} 个应用永久删除；${aggregate.errors.length} 个关联残留未能处理。`;
     } else if (removedIds.size > 0) {
-      notice.value = `已卸载 ${removedIds.size} 个应用；${failedDetails.length} 个失败并已保留：${failedDetails.join("、")}。`;
+      notice.value = `已卸载 ${removedIds.size} 个应用；${failedDetails.length} 个未完成，请检查：${failedDetails.join("、")}。`;
     } else {
-      notice.value = `卸载失败，所选应用均已保留：${failedDetails.join("、")}。`;
+      notice.value = `卸载未完成，请检查所选应用：${failedDetails.join("、")}。`;
     }
   } finally {
-    isUninstalling.value = false;
+    // Re-read actual disk space even if deletion partially fails or a later call errors.
+    try {
+      if (attemptedNativeUninstall) await diskStore.refreshDiskInfo();
+    } finally {
+      isUninstalling.value = false;
+    }
   }
 }
 
 function requestUninstall() {
-  if (selectedApps.value.length === 0 || isUninstalling.value) return;
+  if (selectedApps.value.length === 0 || isUninstalling.value || dataSource.value !== "native") return;
   isConfirmingUninstall.value = true;
 }
 
@@ -625,12 +638,12 @@ function normalizePath(path: string): string {
       <template v-else>
         <div class="confirm-symbol" aria-hidden="true">!</div>
         <div class="confirm-copy">
-          <strong>确认将 {{ selectedApps.length }} 个应用及关联文件移入废纸篓？</strong>
-          <span>预计释放 {{ formatBytes(selectedTotal) }}。你仍可从 macOS 废纸篓恢复。</span>
+          <strong>确认将 {{ selectedApps.length }} 个应用及关联文件永久删除？</strong>
+          <span>预计释放 {{ formatBytes(selectedTotal) }}。应用及关联文件将直接删除，无法从废纸篓恢复。</span>
         </div>
         <div class="confirm-actions">
           <button type="button" class="confirm-cancel" @click="isConfirmingUninstall = false">取消</button>
-          <button type="button" class="confirm-submit" @click="uninstallSelected">确认移入废纸篓</button>
+          <button type="button" class="confirm-submit" @click="uninstallSelected">确认永久删除</button>
         </div>
       </template>
     </footer>
@@ -639,7 +652,7 @@ function normalizePath(path: string): string {
       <span>✓</span>
       <p>
         释放 {{ formatBytes(uninstallReport.freed_bytes) }}，处理
-        {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件。项目已移入废纸篓，可在 macOS 废纸篓中自行恢复。
+        {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件。项目已直接删除，无法从废纸篓恢复。
       </p>
     </div>
 

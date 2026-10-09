@@ -16,6 +16,7 @@ const navItems = [
   { id: "scanner", label: "安心清理", description: "扫描与确认", icon: "shield" },
   { id: "space-map", label: "空间地图", description: "目录占用分析", icon: "map" },
   { id: "uninstaller", label: "应用管理", description: "应用与残留", icon: "apps" },
+  { id: "startup", label: "启动项管理", description: "登录与后台启动", icon: "power" },
   { id: "settings", label: "外观与设置", description: "主题和权限", icon: "settings" },
 ];
 
@@ -24,7 +25,7 @@ const totalText = computed(() => formatBytes(props.diskInfo.total_bytes));
 const usageWidth = computed(() => `${Math.min(Math.max(props.diskInfo.usage_percent, 0), 100)}%`);
 
 function selectView(id: string) {
-  if (["dashboard", "scanner", "space-map", "uninstaller", "settings"].includes(id)) {
+  if (["dashboard", "scanner", "space-map", "uninstaller", "startup", "settings"].includes(id)) {
     emit("update:current-view", id);
   }
 }

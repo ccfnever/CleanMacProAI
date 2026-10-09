@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import ts from 'typescript';
+const source = await readFile(new URL('../src/lib/startupItems.ts', import.meta.url), 'utf8');
+const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
+const { matchesStartup } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+const item = {name:'Example', label:'com.example.agent', kind:'user_agent', enabled:null, missing_target:true, path:'/Users/test/Library/LaunchAgents/example.plist', program:'/Applications/Example.app/Contents/MacOS/Example'};
+assert.equal(matchesStartup(item, 'enabled', '', 'all'), false);
+assert.equal(matchesStartup(item, 'disabled', '', 'all'), false);
+assert.equal(matchesStartup(item, 'missing', ' COM.EXAMPLE ', 'all'), true);
+assert.equal(matchesStartup({...item,enabled:false}, 'missing', '', 'user_agent'), true);
+assert.equal(matchesStartup(item, 'all', 'launchagents', 'user_agent'), true);
+assert.equal(matchesStartup(item, 'all', '', 'system_daemon'), false);
+assert.equal(matchesStartup(item, 'all', 'different', 'all'), false);
+console.log('Passed: unknown states remain separate; missing targets overlap state filters; search and type filters compose correctly.');
