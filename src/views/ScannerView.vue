@@ -15,6 +15,7 @@ const {
   cleanProgress,
   cleanReport,
   dataSource,
+  deletionMode,
   expandedCategory,
   highCount,
   isAllSelectableSelected,
@@ -43,6 +44,17 @@ const {
   toggleExpanded,
 } = scannerStore;
 
+const cleanDialog = ref<HTMLDialogElement | null>(null);
+const permanentAcknowledged = ref(false);
+function requestClean() {
+  permanentAcknowledged.value = false;
+  cleanDialog.value?.showModal();
+}
+async function confirmClean() {
+  if (deletionMode.value === "permanent" && !permanentAcknowledged.value) return;
+  cleanDialog.value?.close();
+  await cleanSelected(permanentAcknowledged.value);
+}
 const activeFilter = ref<RiskFilter>("all");
 const query = ref("");
 const openingPath = ref<string | null>(null);
@@ -165,10 +177,14 @@ async function openFolder(path: string) {
         <div>
           <strong>{{ cleanReport.errors.length ? "清理部分完成" : "清理完成" }}</strong>
           <p>
-            释放 {{ formatBytes(cleanReport.freed_bytes) }}，处理
-            {{ cleanReport.cleaned_count.toLocaleString() }} 个文件，跳过 {{ cleanReport.skipped_count }} 个。
-            已清理的项目已直接删除。
+            已处理 {{ formatBytes(cleanReport.processed_bytes ?? cleanReport.freed_bytes) }}，处理
+            {{ cleanReport.cleaned_count.toLocaleString() }} 个项目，跳过 {{ cleanReport.skipped_count }} 个。
+            {{ cleanReport.deletion_mode === 'permanent' ? '项目已永久删除，无法从废纸篓恢复。' : '项目已移入废纸篓；清空废纸篓后才会释放空间。' }}
           </p>
+          <details v-if="cleanReport.errors.length">
+            <summary>查看未处理项目</summary>
+            <ul><li v-for="(error, index) in cleanReport.errors" :key="index">{{ error.path }}：{{ error.reason }}</li></ul>
+          </details>
         </div>
       </div>
 
@@ -330,13 +346,18 @@ async function openFolder(path: string) {
           </div>
         </div>
         <div class="selection-actions">
-          <span><AppIcon name="shield" :size="13" /> 已选项目将直接删除，不进入废纸篓</span>
+          <label>处理方式
+            <select v-model="deletionMode" :disabled="isCleaning">
+              <option value="trash">移入废纸篓（默认）</option>
+              <option value="permanent">永久删除</option>
+            </select>
+          </label>
           <button
             type="button"
             class="primary-action"
             :disabled="selectedCategories.size === 0 || isCleaning || dataSource === 'demo'"
             :title="dataSource === 'demo' ? '演示模式不会执行清理' : undefined"
-            @click="cleanSelected"
+            @click="requestClean"
           >
             <AppIcon name="trash" :size="16" />
             {{ isCleaning ? "清理中" : "清理已选项目" }}
@@ -354,10 +375,28 @@ async function openFolder(path: string) {
         {{ cleanReport ? "重新扫描" : "开始扫描" }}
       </button>
     </section>
+    <dialog ref="cleanDialog" class="clean-dialog" aria-labelledby="clean-dialog-title">
+      <h2 id="clean-dialog-title">{{ deletionMode === 'permanent' ? '确认永久删除已选项目？' : '将已选项目移入废纸篓？' }}</h2>
+      <p>{{ selectedSummary }} · 数据大小 {{ formatBytes(selectedTotal) }}</p>
+      <p>{{ deletionMode === 'permanent' ? '文件将直接删除，无法从废纸篓恢复。' : '可以在废纸篓仍保留文件时恢复；移入废纸篓不会立即释放空间。' }}</p>
+      <p v-if="deletionMode === 'trash' && selectedCategories.has('trash')">废纸篓内容会跳过；清空废纸篓需要选择永久删除。</p>
+      <label v-if="deletionMode === 'permanent'"><input v-model="permanentAcknowledged" type="checkbox" /> 我理解永久删除无法从废纸篓恢复</label>
+      <div class="clean-dialog-actions">
+        <button type="button" class="secondary-action" @click="cleanDialog?.close()">取消</button>
+        <button type="button" class="primary-action" :disabled="deletionMode === 'permanent' && !permanentAcknowledged" @click="confirmClean">{{ deletionMode === 'permanent' ? '确认永久删除' : '确认移入废纸篓' }}</button>
+      </div>
+    </dialog>
   </section>
 </template>
 
 <style scoped>
+.clean-dialog { width: min(480px, calc(100vw - 40px)); padding: 24px; border: 1px solid var(--border); border-radius: 16px; color: var(--text); background: var(--surface); }
+.clean-dialog::backdrop { background: rgba(40,32,27,.38); }
+.clean-dialog p { font-size: 13px; line-height: 1.7; }
+.clean-dialog label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.clean-dialog-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.selection-actions select { padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+
 .scanner-page {
   max-width: 1240px;
   margin: 20px auto 0;

@@ -1,5 +1,6 @@
-/// 扫描引擎 — Tauri Commands
+//! 扫描引擎 — Tauri Commands
 
+use super::path_safety;
 use crate::models::{CategoryResult, FileInfo, ScanProgress, ScanResult};
 use crate::rules::{load_rules, path_matches_any, validate_rules};
 use glob::glob;
@@ -24,7 +25,10 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
     let started_at = Instant::now();
     let rules = load_rules(RULES_YAML)?;
     if rules.version != 1 {
-        return Err(format!("Unsupported cleanup rules version: {}", rules.version));
+        return Err(format!(
+            "Unsupported cleanup rules version: {}",
+            rules.version
+        ));
     }
     let warnings = validate_rules(&rules);
     if !warnings.is_empty() {
@@ -63,7 +67,10 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
         let mut seen_detail_paths = HashSet::new();
 
         for pattern in expand_rule_patterns(&rule.paths) {
-            for path in glob(&pattern).map_err(|e| e.to_string())?.filter_map(Result::ok) {
+            for path in glob(&pattern)
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+            {
                 collect_detail_item(
                     &path,
                     &rule.exclude,
@@ -90,7 +97,7 @@ pub async fn scan_system(state: State<'_, Mutex<ScanState>>) -> Result<ScanResul
 
         if file_count > 0 {
             total_size += category_size;
-            detail_items.sort_by(|left, right| right.size.cmp(&left.size));
+            detail_items.sort_by_key(|item| std::cmp::Reverse(item.size));
             categories.push(CategoryResult {
                 id: category_id.clone(),
                 name: rule.name.clone(),
@@ -155,7 +162,11 @@ fn scan_path(
     file_count: &mut u64,
     category_size: &mut u64,
 ) {
-    if path_matches_any(path, exclude) || path_matches_any(path, global_exclude) {
+    if path_safety::existing_path(path).is_err()
+        || !path_safety::readable(path)
+        || path_matches_any(path, exclude)
+        || path_matches_any(path, global_exclude)
+    {
         return;
     }
 
@@ -171,6 +182,12 @@ fn scan_path(
     for entry in WalkDir::new(path)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|entry| {
+            !entry.file_type().is_symlink()
+                && path_safety::readable(entry.path())
+                && !path_matches_any(entry.path(), exclude)
+                && !path_matches_any(entry.path(), global_exclude)
+        })
         .filter_map(Result::ok)
     {
         if *file_count >= MAX_FILES_PER_CATEGORY {
@@ -187,13 +204,11 @@ fn scan_path(
     }
 }
 
-fn collect_file(
-    path: &Path,
-    min_size: u64,
-    file_count: &mut u64,
-    category_size: &mut u64,
-) {
-    let Ok(metadata) = fs::metadata(path) else {
+fn collect_file(path: &Path, min_size: u64, file_count: &mut u64, category_size: &mut u64) {
+    if path_safety::existing_path(path).is_err() || !path_safety::readable(path) {
+        return;
+    }
+    let Ok(metadata) = fs::symlink_metadata(path) else {
         return;
     };
     let size = metadata.len();
@@ -213,7 +228,11 @@ fn collect_detail_item(
     detail_items: &mut Vec<FileInfo>,
     seen_paths: &mut HashSet<String>,
 ) {
-    if path_matches_any(path, exclude) || path_matches_any(path, global_exclude) {
+    if path_safety::existing_path(path).is_err()
+        || !path_safety::readable(path)
+        || path_matches_any(path, exclude)
+        || path_matches_any(path, global_exclude)
+    {
         return;
     }
 
@@ -248,7 +267,12 @@ fn collect_detail_item(
     });
 }
 
-fn detail_path_size(path: &Path, exclude: &[String], global_exclude: &[String], min_size: u64) -> u64 {
+fn detail_path_size(
+    path: &Path,
+    exclude: &[String],
+    global_exclude: &[String],
+    min_size: u64,
+) -> u64 {
     if path.is_file() {
         let Ok(metadata) = fs::metadata(path) else {
             return 0;
@@ -264,6 +288,12 @@ fn detail_path_size(path: &Path, exclude: &[String], global_exclude: &[String], 
     WalkDir::new(path)
         .follow_links(false)
         .into_iter()
+        .filter_entry(|entry| {
+            !entry.file_type().is_symlink()
+                && path_safety::readable(entry.path())
+                && !path_matches_any(entry.path(), exclude)
+                && !path_matches_any(entry.path(), global_exclude)
+        })
         .filter_map(Result::ok)
         .map(|entry| entry.into_path())
         .filter(|entry_path| {
@@ -287,4 +317,44 @@ fn display_path(path: &Path) -> String {
         .strip_prefix(home_text.as_ref())
         .map(|rest| format!("~{}", rest))
         .unwrap_or(absolute)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn scanner_counts_and_previews_share_exclusions_and_never_follow_symlinks() {
+        let root =
+            std::env::temp_dir().join(format!("cleanmac-scan-safety-{}", std::process::id()));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let root = root.canonicalize().unwrap();
+        fs::write(root.join("nested/keep.plist"), [0; 20]).unwrap();
+        fs::write(root.join("nested/cache.bin"), [0; 7]).unwrap();
+        fs::write(root.join("outside.bin"), [0; 11]).unwrap();
+        std::os::unix::fs::symlink(root.join("outside.bin"), root.join("nested/link")).unwrap();
+        let exclude = vec!["*.plist".into()];
+        let mut count = 0;
+        let mut size = 0;
+        scan_path(
+            &root.join("nested"),
+            &exclude,
+            &[],
+            0,
+            &mut count,
+            &mut size,
+        );
+        assert_eq!((count, size), (1, 7));
+        assert_eq!(detail_path_size(&root.join("nested"), &exclude, &[], 0), 7);
+        scan_path(
+            &root.join("nested/link"),
+            &[],
+            &[],
+            0,
+            &mut count,
+            &mut size,
+        );
+        assert_eq!((count, size), (1, 7));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

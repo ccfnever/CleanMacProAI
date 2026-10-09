@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
+import { getVersion } from "@tauri-apps/api/app";
 import { storeToRefs } from "pinia";
 import AppIcon from "../components/AppIcon.vue";
 import { invokeOrDemo } from "../lib/demoData";
 import { useThemeStore, type ThemeName } from "../stores/theme";
 
-const showHiddenFiles = ref(false);
-const autoCleanCache = ref(false);
-const autoUpdate = ref(true);
-const language = ref("zh-CN");
-const scanDepth = ref("balanced");
+const appVersion = ref("浏览器预览");
+onMounted(async () => {
+  try { appVersion.value = await getVersion(); } catch { /* Browser preview has no native app version. */ }
+});
 const permissionStatus = ref("建议开启，用于扫描系统级缓存和日志。");
 const themeStore = useThemeStore();
 const { currentTheme } = storeToRefs(themeStore);
@@ -54,42 +54,10 @@ async function openFullDiskAccess() {
       </div>
     </section>
 
-    <div class="settings-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <span><AppIcon name="shield" :size="19" /></span>
-          <div><h2>清理安全</h2><p>控制扫描报告与自动行为。</p></div>
-        </div>
-        <label class="setting-row">
-          <span><strong>显示隐藏文件</strong><small>在扫描报告中显示隐藏目录命中的文件。</small></span>
-          <input v-model="showHiddenFiles" type="checkbox" />
-        </label>
-        <label class="setting-row">
-          <span><strong>启动后自动扫描缓存</strong><small>只扫描低风险缓存，不自动执行清理。</small></span>
-          <input v-model="autoCleanCache" type="checkbox" />
-        </label>
-        <label class="select-row">
-          <span><strong>扫描深度</strong><small>选择扫描策略，清理仍需你手动确认。</small></span>
-          <select v-model="scanDepth"><option value="safe">仅安全项</option><option value="balanced">平衡</option><option value="deep">深度</option></select>
-        </label>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <span><AppIcon name="settings" :size="19" /></span>
-          <div><h2>常规偏好</h2><p>语言、更新和应用信息。</p></div>
-        </div>
-        <label class="setting-row">
-          <span><strong>自动更新</strong><small>有新版本时提示下载和安装。</small></span>
-          <input v-model="autoUpdate" type="checkbox" />
-        </label>
-        <label class="select-row">
-          <span><strong>语言</strong><small>界面显示语言。</small></span>
-          <select v-model="language"><option value="zh-CN">简体中文</option><option value="en">English</option></select>
-        </label>
-        <div class="version-row"><span><strong>当前版本</strong><small>本地优先 · 规则可审计</small></span><b>0.1.0</b></div>
-      </section>
-    </div>
+    <section class="panel about-panel">
+      <div class="panel-head"><span><AppIcon name="settings" :size="19" /></span><div><h2>应用信息</h2><p>本地运行 · 清理需手动确认</p></div></div>
+      <div class="version-row"><span><strong>当前版本</strong><small>主题偏好自动保存；删除默认移入废纸篓。</small></span><b>{{ appVersion }}</b></div>
+    </section>
 
     <section class="panel permission-panel">
       <div class="permission-icon"><AppIcon name="disk" :size="21" /></div>
@@ -100,6 +68,7 @@ async function openFullDiskAccess() {
 </template>
 
 <style scoped>
+.about-panel { margin-top: 12px; }
 .settings-page { max-width: 1240px; margin: 20px auto 0; color: var(--text); }
 .settings-intro { padding: 24px 28px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-soft); }
 .section-kicker { margin: 0 0 7px; color: var(--accent); font-size: 9px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }

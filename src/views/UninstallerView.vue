@@ -4,6 +4,7 @@ import {
   formatBytes,
   invokeOrDemo,
   type CleanReport,
+  type DeletionMode,
   type FileInfo,
   type InstalledApp,
 } from "../lib/demoData";
@@ -43,6 +44,9 @@ const isLoading = ref(true);
 const inspectingAppPath = ref<string | null>(null);
 const isUninstalling = ref(false);
 const isConfirmingUninstall = ref(false);
+const deletionMode = ref<DeletionMode>("trash");
+const confirmedMode = ref<DeletionMode>("trash");
+const permanentAcknowledged = ref(false);
 const query = ref("");
 const sortBy = ref<AppSort>("size");
 const activeFacet = ref("status:all");
@@ -400,6 +404,8 @@ function selectAllVisible() {
 
 async function uninstallSelected() {
   if (!isConfirmingUninstall.value || selectedApps.value.length === 0 || isUninstalling.value || dataSource.value !== "native") return;
+  const mode = confirmedMode.value;
+  if (mode === "permanent" && !permanentAcknowledged.value) return;
   isConfirmingUninstall.value = false;
   isUninstalling.value = true;
   uninstallReport.value = null;
@@ -408,7 +414,7 @@ async function uninstallSelected() {
   const removedIds = new Set<string>();
   const failedIds = new Set<string>();
   const failedDetails: string[] = [];
-  const aggregate: CleanReport = { cleaned_count: 0, freed_bytes: 0, skipped_count: 0, errors: [] };
+  const aggregate: CleanReport = { cleaned_count: 0, freed_bytes: 0, processed_bytes: 0, deletion_mode: mode, skipped_count: 0, errors: [] };
 
   try {
     for (const app of targets) {
@@ -421,6 +427,8 @@ async function uninstallSelected() {
       }, {
         bundleId: app.bundle_id,
         appPath: app.app_path,
+        mode,
+        permanentConfirmed: mode === "permanent" && permanentAcknowledged.value,
       });
       if (result.source === "error") {
         failedIds.add(app.app_path);
@@ -443,6 +451,7 @@ async function uninstallSelected() {
       removedIds.add(app.app_path);
       aggregate.cleaned_count += result.data.cleaned_count;
       aggregate.freed_bytes += result.data.freed_bytes;
+      aggregate.processed_bytes = (aggregate.processed_bytes ?? 0) + (result.data.processed_bytes ?? result.data.freed_bytes);
       aggregate.skipped_count += result.data.skipped_count;
       aggregate.errors.push(...result.data.errors);
     }
@@ -457,9 +466,9 @@ async function uninstallSelected() {
     );
 
     if (removedIds.size === targets.length && aggregate.errors.length === 0) {
-      notice.value = `已将 ${removedIds.size} 个应用及关联残留永久删除。`;
+      notice.value = `已将 ${removedIds.size} 个应用及关联残留${mode === "trash" ? "移入废纸篓，清空后才会释放空间" : "永久删除，无法从废纸篓恢复"}。`;
     } else if (removedIds.size === targets.length) {
-      notice.value = `已将 ${removedIds.size} 个应用永久删除；${aggregate.errors.length} 个关联残留未能处理。`;
+      notice.value = `已将 ${removedIds.size} 个应用${mode === "trash" ? "移入废纸篓" : "永久删除"}；${aggregate.errors.length} 个关联残留未能处理。`;
     } else if (removedIds.size > 0) {
       notice.value = `已卸载 ${removedIds.size} 个应用；${failedDetails.length} 个未完成，请检查：${failedDetails.join("、")}。`;
     } else {
@@ -471,12 +480,16 @@ async function uninstallSelected() {
       if (attemptedNativeUninstall) await diskStore.refreshDiskInfo();
     } finally {
       isUninstalling.value = false;
+      deletionMode.value = "trash";
+      permanentAcknowledged.value = false;
     }
   }
 }
 
 function requestUninstall() {
   if (selectedApps.value.length === 0 || isUninstalling.value || dataSource.value !== "native") return;
+  confirmedMode.value = deletionMode.value;
+  permanentAcknowledged.value = false;
   isConfirmingUninstall.value = true;
 }
 
@@ -629,8 +642,9 @@ function normalizePath(path: string): string {
       <template v-if="!isConfirmingUninstall">
         <div class="selection-summary">
           <strong>{{ selectedAppPaths.size }} 个应用</strong>
-          <span>{{ selectedTotal > 0 ? `预计释放 ${formatBytes(selectedTotal)}` : "勾选应用后可继续" }}</span>
+          <span>{{ selectedTotal > 0 ? `待处理大小 ${formatBytes(selectedTotal)}` : "勾选应用后可继续" }}</span>
         </div>
+        <label class="deletion-choice">处理方式 <select v-model="deletionMode" :disabled="isUninstalling"><option value="trash">移入废纸篓（默认）</option><option value="permanent">永久删除</option></select></label>
         <button type="button" class="uninstall-orb" :title="dataSource !== 'native' ? '请在 macOS 桌面应用中执行卸载' : undefined" :disabled="selectedAppPaths.size === 0 || isUninstalling || dataSource !== 'native'" @click="requestUninstall">
           <AppIcon name="trash" :size="16" /> {{ isUninstalling ? "卸载中" : "准备卸载" }}
         </button>
@@ -638,12 +652,13 @@ function normalizePath(path: string): string {
       <template v-else>
         <div class="confirm-symbol" aria-hidden="true">!</div>
         <div class="confirm-copy">
-          <strong>确认将 {{ selectedApps.length }} 个应用及关联文件永久删除？</strong>
-          <span>预计释放 {{ formatBytes(selectedTotal) }}。应用及关联文件将直接删除，无法从废纸篓恢复。</span>
+          <strong>确认将 {{ selectedApps.length }} 个应用及关联文件{{ confirmedMode === 'permanent' ? '永久删除' : '移入废纸篓' }}？</strong>
+          <span>数据大小 {{ formatBytes(selectedTotal) }}。{{ confirmedMode === 'permanent' ? '文件将直接删除，无法从废纸篓恢复。' : '文件仍在废纸篓时可以恢复；清空后才会释放空间。' }}共享容器数据会保留；无权限的项目会跳过，可在 Finder 中手动处理。</span>
+          <label v-if="confirmedMode === 'permanent'" class="permanent-ack"><input v-model="permanentAcknowledged" type="checkbox" /> 我理解永久删除无法从废纸篓恢复</label>
         </div>
         <div class="confirm-actions">
           <button type="button" class="confirm-cancel" @click="isConfirmingUninstall = false">取消</button>
-          <button type="button" class="confirm-submit" @click="uninstallSelected">确认永久删除</button>
+          <button type="button" class="confirm-submit" :disabled="confirmedMode === 'permanent' && !permanentAcknowledged" @click="uninstallSelected">{{ confirmedMode === 'permanent' ? '确认永久删除' : '确认移入废纸篓' }}</button>
         </div>
       </template>
     </footer>
@@ -651,8 +666,8 @@ function normalizePath(path: string): string {
     <div v-if="uninstallReport" class="report-panel">
       <span>✓</span>
       <p>
-        释放 {{ formatBytes(uninstallReport.freed_bytes) }}，处理
-        {{ uninstallReport.cleaned_count.toLocaleString() }} 个文件。项目已直接删除，无法从废纸篓恢复。
+        已处理 {{ formatBytes(uninstallReport.processed_bytes ?? uninstallReport.freed_bytes) }}，处理
+        {{ uninstallReport.cleaned_count.toLocaleString() }} 个项目。{{ uninstallReport.deletion_mode === 'permanent' ? '项目已永久删除，无法从废纸篓恢复。' : '项目已移入废纸篓；清空后才会释放空间。' }}
       </p>
     </div>
 
@@ -660,6 +675,11 @@ function normalizePath(path: string): string {
 </template>
 
 <style scoped>
+.deletion-choice { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.deletion-choice select { padding: 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); }
+.permanent-ack { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+.confirm-submit:disabled { opacity: .45; cursor: not-allowed; }
+
 .uninstaller-page {
   position: relative;
   min-height: 100vh;
@@ -1270,6 +1290,11 @@ function normalizePath(path: string): string {
 </style>
 
 <style scoped>
+.deletion-choice { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.deletion-choice select { padding: 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); }
+.permanent-ack { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+.confirm-submit:disabled { opacity: .45; cursor: not-allowed; }
+
 /* v4 table layout: native discovery, inspection and uninstall calls remain unchanged. */
 .uninstaller-page {
   position: relative;

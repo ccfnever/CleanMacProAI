@@ -13,7 +13,7 @@ const transpile = (source) => ts.transpileModule(source, {
 try {
   const view = await readFile(new URL("../src/views/UninstallerView.vue", import.meta.url), "utf8");
   const script = view.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
-  await writeFile(join(temp, "view.mjs"), transpile(`${script}\nexport { apps, inspectApp, toggleSelected, toggleExpanded, selectedApps, expandedAppPaths, uninstallSelected, requestUninstall, isConfirmingUninstall, dataSource, sortBy, filteredApps };`)
+  await writeFile(join(temp, "view.mjs"), transpile(`${script}\nexport { apps, inspectApp, toggleSelected, toggleExpanded, selectedApps, expandedAppPaths, uninstallSelected, requestUninstall, isConfirmingUninstall, dataSource, sortBy, filteredApps, deletionMode, confirmedMode, permanentAcknowledged, notice, uninstallReport };`)
     .replaceAll('"vue"', '"./vue.mjs"')
     .replaceAll('"../lib/demoData"', '"./boundary.mjs"')
     .replaceAll('"../lib/appOccupancy"', '"./occupancy.mjs"')
@@ -70,6 +70,10 @@ try {
   await state.uninstallSelected(); // mocked boundary: never uninstall real applications
   assert.deepEqual(state.apps.value.map((app) => app.app_path), [a.app_path]);
   assert.equal(globalThis.appCalls.at(-2).args.appPath, b.app_path);
+  assert.equal(globalThis.appCalls.at(-2).args.mode, "trash");
+  assert.equal(globalThis.appCalls.at(-2).args.permanentConfirmed, false);
+  assert.match(state.notice.value, /废纸篓/);
+  assert.equal(state.uninstallReport.value.deletion_mode, "trash");
   assert.equal(globalThis.appCalls.at(-1).command, "get_disk_info");
   assert.deepEqual(useDiskStore().diskInfo, disk);
   state.toggleSelected(a.app_path);
@@ -87,6 +91,21 @@ try {
   assert.match(useDiskStore().diskNotice, /disk unavailable/);
   assert.equal(globalThis.appCalls.at(-1).command, "get_disk_info");
   assert.equal(state.apps.value.length, 1);
+  state.apps.value = [a];
+  state.deletionMode.value = "permanent";
+  state.requestUninstall();
+  const beforePermanent = globalThis.appCalls.length;
+  await state.uninstallSelected();
+  assert.equal(globalThis.appCalls.length, beforePermanent);
+  assert.equal(state.isConfirmingUninstall.value, true);
+  state.permanentAcknowledged.value = true;
+  globalThis.appResponses = [{ cleaned_count: 1, processed_bytes: 50, freed_bytes: 50, skipped_count: 0, errors: [], deletion_mode: "permanent" }, disk];
+  await state.uninstallSelected();
+  assert.equal(globalThis.appCalls.at(-2).args.mode, "permanent");
+  assert.equal(globalThis.appCalls.at(-2).args.permanentConfirmed, true);
+  assert.equal(state.uninstallReport.value.processed_bytes, 50);
+  assert.match(state.notice.value, /永久删除/);
+
   console.log("Passed: confirmation guards deletion; uninstall refreshes shared disk state on success, partial completion and errors.");
   console.log("Passed: same-ID copies are inspected, expanded, selected and removed independently by path.");
 } finally {

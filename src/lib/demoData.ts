@@ -25,7 +25,11 @@ export interface ScanResult {
   scan_duration_ms: number;
 }
 
+export type DeletionMode = "trash" | "permanent";
+
 export interface CleanReport {
+  processed_bytes?: number;
+  deletion_mode?: DeletionMode;
   cleaned_count: number;
   freed_bytes: number;
   skipped_count: number;
@@ -189,21 +193,38 @@ export const demoSpaceMapResult: SpaceMapResult = {
 };
 
 export const demoScanResult: ScanResult = {
-  total_size: 18_098_675_712,
+  total_size: 20_203_659_264,
   scan_duration_ms: 4200,
   categories: [
     {
       id: "xcode_derived",
       name: "Xcode 构建缓存",
-      description: "DerivedData、Archives 和模拟器缓存，可安全重建。",
+      description: "DerivedData 和模拟器缓存，通常可重新生成；不包含发布归档。",
       risk: "low",
-      file_count: 18842,
-      total_size: 8_724_152_320,
+      file_count: 14842,
+      total_size: 7_004_569_600,
       files: [
         { path: "~/Library/Developer/Xcode/DerivedData/CleanMacProAI-bkpq", size: 2_104_983_552, is_dir: true },
-        { path: "~/Library/Developer/Xcode/iOS DeviceSupport/17.4", size: 1_719_582_720, is_dir: true },
-        { path: "~/Library/Developer/CoreSimulator/Caches/dyld", size: 842_006_528, is_dir: true },
+        { path: "~/Library/Developer/CoreSimulator/Devices/demo-device/data/Library/Caches/dyld", size: 842_006_528, is_dir: true },
       ],
+    },
+    {
+      id: "xcode_device_support",
+      name: "Xcode 设备调试支持",
+      description: "删除后可能需要重新准备设备调试支持，请确认后再处理。",
+      risk: "medium",
+      file_count: 4000,
+      total_size: 1_719_582_720,
+      files: [{ path: "~/Library/Developer/Xcode/iOS DeviceSupport/17.4", size: 1_719_582_720, is_dir: true }],
+    },
+    {
+      id: "xcode_archives",
+      name: "Xcode 发布归档",
+      description: "包含发布归档和调试符号，仅供展示，请在 Xcode Organizer 中手动管理。",
+      risk: "high",
+      file_count: 58,
+      total_size: 2_104_983_552,
+      files: [{ path: "~/Library/Developer/Xcode/Archives/2026-10-09/Release.xcarchive", size: 2_104_983_552, is_dir: true }],
     },
     {
       id: "browser_cache",
@@ -215,7 +236,7 @@ export const demoScanResult: ScanResult = {
       files: [
         { path: "~/Library/Caches/Google/Chrome/Default/Cache/Cache_Data", size: 1_633_779_712, is_dir: true },
         { path: "~/Library/Caches/com.apple.Safari/fsCachedData", size: 964_689_920, is_dir: true },
-        { path: "~/Library/Caches/Microsoft Edge/Default/Code Cache/js", size: 517_996_544, is_dir: true },
+        { path: "~/Library/Caches/Microsoft/Edge/Default/Cache/Cache_Data", size: 517_996_544, is_dir: true },
       ],
     },
     {
@@ -319,8 +340,10 @@ export const demoApps: InstalledApp[] = [
 ];
 
 export const demoCleanReport: CleanReport = {
+  processed_bytes: 17_669_455_872,
+  deletion_mode: "trash",
   cleaned_count: 55280,
-  freed_bytes: 17_669_455_872,
+  freed_bytes: 0,
   skipped_count: 3,
   errors: [],
 };

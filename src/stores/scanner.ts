@@ -7,6 +7,7 @@ import {
   invokeOrDemo,
   type CategoryResult,
   type CleanReport,
+  type DeletionMode,
   type ScanResult,
 } from "../lib/demoData";
 
@@ -23,6 +24,7 @@ export const useScannerStore = defineStore("scanner", () => {
   const dataSource = ref<"native" | "demo">("demo");
   const notice = ref<string | null>(null);
   const isCleaning = ref(false);
+  const deletionMode = ref<DeletionMode>("trash");
   const cleanProgress = ref(0);
   const cleanPhase = ref("等待清理");
   const lastScanDurationMs = ref<number | null>(null);
@@ -152,8 +154,13 @@ export const useScannerStore = defineStore("scanner", () => {
     expandedCategory.value = expandedCategory.value === id ? null : id;
   }
 
-  async function cleanSelected() {
+  async function cleanSelected(permanentConfirmed = false) {
     if (isCleaning.value || isScanning.value) return;
+    const mode = deletionMode.value;
+    if (mode === "permanent" && !permanentConfirmed) {
+      notice.value = "永久删除需要明确确认，文件无法从废纸篓恢复。";
+      return;
+    }
     cleanReport.value = null;
     cleanProgress.value = 0;
     cleanPhase.value = "等待清理";
@@ -174,9 +181,11 @@ export const useScannerStore = defineStore("scanner", () => {
     };
     try {
       cleanProgress.value = 45;
-      cleanPhase.value = "正在直接删除已选项目";
+      cleanPhase.value = mode === "trash" ? "正在移入废纸篓" : "正在永久删除已确认项目";
       const result = await invokeOrDemo<CleanReport>("clean_categories", fallback, {
         categoryIds: selectedItems.value.map((item) => item.id),
+        mode,
+        permanentConfirmed: mode === "permanent" && permanentConfirmed,
       });
       if (result.source === "error") {
         cleanProgress.value = 0;
@@ -193,7 +202,7 @@ export const useScannerStore = defineStore("scanner", () => {
 
       cleanProgress.value = 85;
       cleanPhase.value = "正在更新扫描结果";
-      cleanReport.value = result.data;
+      cleanReport.value = { ...result.data, deletion_mode: result.data.deletion_mode ?? mode };
       await useDiskStore().refreshDiskInfo();
       const refreshedScan = await invokeOrDemo<ScanResult>("scan_system", demoScanResult);
       if (refreshedScan.source === "native" || refreshedScan.source === "empty") {
@@ -204,8 +213,8 @@ export const useScannerStore = defineStore("scanner", () => {
           ? `扫描结果已更新 · ${(refreshedScan.data.scan_duration_ms / 1000).toFixed(1)} 秒`
           : "扫描结果已更新 · 未发现可清理项目";
         notice.value = result.data.errors.length === 0
-          ? "清理完成，建议释放空间已按当前扫描结果更新。"
-          : `清理部分完成，跳过 ${result.data.skipped_count} 项；建议释放空间已按剩余项目更新。`;
+          ? "清理完成，待处理大小已按当前扫描结果更新。"
+          : `清理部分完成，跳过 ${result.data.skipped_count} 项；待处理大小已按剩余项目更新。`;
       } else {
         const refreshError = refreshedScan.source === "error"
           ? refreshedScan.error
@@ -225,6 +234,7 @@ export const useScannerStore = defineStore("scanner", () => {
       cleanPhase.value = "清理完成";
     } finally {
       isCleaning.value = false;
+      deletionMode.value = "trash";
     }
   }
 
@@ -233,6 +243,7 @@ export const useScannerStore = defineStore("scanner", () => {
     cleanPhase,
     cleanProgress,
     cleanReport,
+    deletionMode,
     dataSource,
     expandedCategory,
     highCount,

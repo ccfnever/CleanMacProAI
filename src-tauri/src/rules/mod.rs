@@ -1,4 +1,4 @@
-/// 清理规则引擎 — 从 YAML 加载并验证清理规则
+//! 清理规则引擎 — 从 YAML 加载并验证清理规则
 
 use crate::models::RiskLevel;
 use glob::Pattern;
@@ -45,7 +45,6 @@ impl CategoryRule {
             _ => RiskLevel::Medium, // 默认中等风险
         }
     }
-
 }
 
 /// 加载并解析规则文件
@@ -79,7 +78,9 @@ pub fn validate_rules(rules: &CleanupRules) -> Vec<String> {
 /// expanding a leading `~/` against the current user's home directory.
 pub fn path_matches_any(path: &Path, patterns: &[String]) -> bool {
     let candidate = normalize_path(&path.to_string_lossy());
-    patterns.iter().any(|pattern| path_matches_pattern(&candidate, pattern))
+    patterns
+        .iter()
+        .any(|pattern| path_matches_pattern(&candidate, pattern))
 }
 
 fn path_matches_pattern(candidate: &str, pattern: &str) -> bool {
@@ -181,6 +182,24 @@ categories:
 "#;
 
     #[test]
+    fn bundled_rules_keep_archives_locked_and_device_support_out_of_default_selection() {
+        let rules = load_rules(include_str!("cleanup_rules.yaml")).unwrap();
+        let archives = &rules.categories["xcode_archives"];
+        assert_eq!(archives.risk_level(), RiskLevel::High);
+        assert!(archives.paths.iter().all(|p| p.contains("/Archives/")));
+        assert_eq!(
+            rules.categories["xcode_device_support"].risk_level(),
+            RiskLevel::Medium
+        );
+        assert!(!rules
+            .categories
+            .values()
+            .filter(|rule| rule.risk == "low")
+            .flat_map(|rule| &rule.paths)
+            .any(|path| path.contains("/Archives/") || path.contains("/iOS DeviceSupport/")));
+    }
+
+    #[test]
     fn test_load_rules() {
         let rules = load_rules(SAMPLE_RULES).expect("Should parse valid YAML");
         assert_eq!(rules.version, 1);
@@ -216,7 +235,10 @@ categories:
     #[test]
     fn exclusion_matches_exact_and_descendant_but_not_similar_prefix() {
         let patterns = vec!["/Users/test/Library/Caches".to_string()];
-        assert!(path_matches_any(Path::new("/Users/test/Library/Caches"), &patterns));
+        assert!(path_matches_any(
+            Path::new("/Users/test/Library/Caches"),
+            &patterns
+        ));
         assert!(path_matches_any(
             Path::new("/Users/test/Library/Caches/App/data"),
             &patterns
@@ -248,7 +270,10 @@ categories:
     fn exclusion_expands_home_prefix() {
         let home = dirs::home_dir().expect("home directory should be available");
         let patterns = vec!["~/Library/Caches".to_string()];
-        assert!(path_matches_any(&home.join("Library/Caches/App"), &patterns));
+        assert!(path_matches_any(
+            &home.join("Library/Caches/App"),
+            &patterns
+        ));
     }
 
     #[test]

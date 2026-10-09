@@ -58,7 +58,7 @@ try {
   assert.equal(scanner.cleanProgress, 100);
   assert.equal(scanner.isCleaning, false);
   assert.deepEqual(globalThis.cleanupCalls.map(({ command }) => command), ["clean_categories", "get_disk_info", "scan_system"]);
-  assert.deepEqual(globalThis.cleanupCalls[0].args, { categoryIds: [category.id] });
+  assert.deepEqual(globalThis.cleanupCalls[0].args, { categoryIds: [category.id], mode: "trash", permanentConfirmed: false });
 
   scanner = setup(responses({ ...report, skipped_count: 1, errors: [{ path: "locked", reason: "permission" }] }, { source: "error", error: "scan failed" }));
   await scanner.cleanSelected();
@@ -80,6 +80,34 @@ try {
   assert.equal(globalThis.cleanupCalls.length, 1);
   assert.equal(scanner.isCleaning, false);
   assert.match(scanner.notice, /cleanup failed/);
+
+  scanner = setup(responses({ ...report, processed_bytes: 200, deletion_mode: "permanent" }));
+  scanner.deletionMode = "permanent";
+  await scanner.cleanSelected();
+  assert.equal(globalThis.cleanupCalls.length, 0); // permanent mode alone is not consent
+  assert.match(scanner.notice, /明确确认/);
+  await scanner.cleanSelected(true);
+  assert.deepEqual(globalThis.cleanupCalls[0].args, { categoryIds: [category.id], mode: "permanent", permanentConfirmed: true });
+  assert.equal(scanner.cleanReport.deletion_mode, "permanent");
+
+  const actualDemoSource = await readFile(new URL("../src/lib/demoData.ts", import.meta.url), "utf8");
+  await writeFile(join(temp, "demo.mjs"), ts.transpileModule(actualDemoSource, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+  }).outputText);
+  const { demoScanResult: actualDemo } = await import(pathToFileURL(join(temp, "demo.mjs")));
+  assert.equal(actualDemo.total_size, actualDemo.categories.reduce((total, item) => total + item.total_size, 0));
+  assert.equal(actualDemo.categories.find((item) => item.id === "xcode_archives").risk, "high");
+  assert.equal(actualDemo.categories.find((item) => item.id === "xcode_device_support").risk, "medium");
+  assert.ok(actualDemo.categories.filter((item) => item.risk === "low").every((item) => !item.description.includes("Archives") && item.files.every((file) => !/Archives|DeviceSupport/.test(file.path))));
+  scanner = setup([{ command: "scan_system", result: { source: "demo", data: actualDemo } }]);
+  globalThis.window = { setTimeout };
+  try {
+    await scanner.startScan();
+    assert.equal(scanner.selectedCategories.has("xcode_archives"), false);
+    assert.equal(scanner.selectedCategories.has("xcode_device_support"), false);
+    scanner.toggleAllCategories();
+    assert.equal(scanner.selectedCategories.has("xcode_archives"), false);
+  } finally { delete globalThis.window; }
 
   scanner = setup([]);
   scanner.dataSource = "demo";

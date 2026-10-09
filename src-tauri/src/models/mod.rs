@@ -1,4 +1,4 @@
-/// 数据模型定义
+//! 数据模型定义
 
 use serde::{Deserialize, Serialize};
 
@@ -59,12 +59,23 @@ pub enum RiskLevel {
 
 // ── 清理执行结果 ──
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionMode {
+    #[default]
+    Trash,
+    Permanent,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanReport {
-    /// 成功删除的文件数
+    /// 成功处理的顶层项目数
     pub cleaned_count: u64,
-    /// 释放的空间（字节）
+    /// 永久删除的处理大小估计；废纸篓模式为 0，并非实测可用空间增量。
     pub freed_bytes: u64,
+    /// 处理的数据大小；移入废纸篓不代表释放磁盘空间。
+    pub processed_bytes: u64,
+    pub deletion_mode: DeletionMode,
     /// 跳过的文件数
     pub skipped_count: u64,
     /// 错误列表

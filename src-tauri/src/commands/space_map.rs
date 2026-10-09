@@ -1,6 +1,10 @@
 //! 空间地图 — 并行查找指定目录中的大文件，并持续发布目录汇总。
 
-use crate::models::{SpaceMapEntry, SpaceMapProgress, SpaceMapResult};
+use super::{
+    deletion,
+    path_safety::{self, FileIdentity},
+};
+use crate::models::{DeletionMode, SpaceMapEntry, SpaceMapProgress, SpaceMapResult};
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, Metadata};
@@ -26,6 +30,37 @@ pub struct SpaceMapState {
     generation: Arc<AtomicU64>,
     stopped_generation: Arc<AtomicU64>,
     progress: Arc<Mutex<SpaceMapProgress>>,
+    authorization: Arc<Mutex<Option<AuthorizedScan>>>,
+}
+
+struct AuthorizedScan {
+    generation: u64,
+    root: PathBuf,
+    entries: HashMap<PathBuf, FileIdentity>,
+}
+
+impl AuthorizedScan {
+    fn from_result(result: &SpaceMapResult, generation: u64) -> Option<Self> {
+        if result.incomplete {
+            return None;
+        }
+        fn collect(entries: &[SpaceMapEntry], paths: &mut HashMap<PathBuf, FileIdentity>) {
+            for entry in entries {
+                let path = PathBuf::from(&entry.path);
+                if let Ok(identity) = FileIdentity::capture(&path) {
+                    paths.insert(path, identity);
+                }
+                collect(&entry.children, paths);
+            }
+        }
+        let mut entries = HashMap::new();
+        collect(&result.entries, &mut entries);
+        Some(Self {
+            generation,
+            root: PathBuf::from(&result.root_path),
+            entries,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -72,6 +107,7 @@ pub async fn analyze_space_map(
         .unwrap_or(DEFAULT_MINIMUM_FILE_SIZE)
         .clamp(MINIMUM_ALLOWED_FILE_SIZE, MAXIMUM_ALLOWED_FILE_SIZE);
     let request_generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
+    *lock(&state.authorization) = None;
     let context = ScanContext {
         generation: Arc::clone(&state.generation),
         stopped_generation: Arc::clone(&state.stopped_generation),
@@ -109,6 +145,15 @@ pub async fn analyze_space_map(
             progress.is_scanning = false;
             progress.current_path = None;
             progress.elapsed_ms = context.started_at.elapsed().as_millis() as u64;
+        }
+    }
+    {
+        let mut authorization = lock(&state.authorization);
+        if state.generation.load(Ordering::Relaxed) == request_generation {
+            *authorization = scan_result
+                .as_ref()
+                .ok()
+                .and_then(|result| AuthorizedScan::from_result(result, request_generation));
         }
     }
     scan_result
@@ -160,38 +205,51 @@ pub async fn choose_space_map_directory() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub async fn trash_space_map_entry(path: String, root_path: String) -> Result<(), String> {
+pub async fn trash_space_map_entry(
+    path: String,
+    root_path: String,
+    state: tauri::State<'_, SpaceMapState>,
+) -> Result<(), String> {
+    let authorization = Arc::clone(&state.authorization);
+    let generation = Arc::clone(&state.generation);
     tokio::task::spawn_blocking(move || {
-        trash_scanned_entry(Path::new(&root_path), Path::new(&path))
+        let mut authorization = lock(&authorization);
+        let snapshot = authorization
+            .as_mut()
+            .ok_or("请先完成空间扫描，再处理扫描结果中的项目")?;
+        if snapshot.generation != generation.load(Ordering::Relaxed) {
+            return Err("扫描结果已过期，请重新扫描".into());
+        }
+        trash_authorized_entry(snapshot, Path::new(&root_path), Path::new(&path))
     })
     .await
     .map_err(|error| format!("移入废纸篓任务异常：{error}"))?
 }
 
-fn trash_scanned_entry(root: &Path, target: &Path) -> Result<(), String> {
-    let target = validate_trash_target(root, target)?;
-    super::trash_support::move_to_trash(&target).map_err(|error| format!("无法移入废纸篓：{error}"))
+fn trash_authorized_entry(
+    snapshot: &mut AuthorizedScan,
+    requested_root: &Path,
+    target: &Path,
+) -> Result<(), String> {
+    if path_safety::existing_path(requested_root)? != snapshot.root {
+        return Err("请求范围与后端扫描范围不一致".into());
+    }
+    let target = validate_trash_target(&snapshot.root, target)?;
+    let identity = snapshot
+        .entries
+        .get(&target)
+        .ok_or("此项目不在后端扫描结果中，请重新扫描")?;
+    identity.verify(&target)?;
+    let target = path_safety::validate_tree(&target, |_| false)?;
+    deletion::execute(&target, identity, DeletionMode::Trash)?;
+    snapshot
+        .entries
+        .retain(|path, _| !path.starts_with(&target));
+    Ok(())
 }
 
 fn validate_trash_target(root: &Path, target: &Path) -> Result<PathBuf, String> {
-    if !root.is_absolute() || !target.is_absolute() {
-        return Err("路径必须是绝对路径".to_string());
-    }
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("扫描范围无法访问：{error}"))?;
-    let metadata =
-        fs::symlink_metadata(target).map_err(|error| format!("文件已不存在或无法访问：{error}"))?;
-    if metadata.file_type().is_symlink() {
-        return Err("不能删除扫描结果之外的符号链接".to_string());
-    }
-    let target = target
-        .canonicalize()
-        .map_err(|error| format!("路径无法访问：{error}"))?;
-    if target == root || !target.starts_with(&root) {
-        return Err("只能移除扫描范围内的子项，不能移除扫描根目录".to_string());
-    }
-    Ok(target)
+    path_safety::validate_child(root, target)
 }
 
 fn analyze_directory(
@@ -199,9 +257,10 @@ fn analyze_directory(
     minimum_file_size: u64,
     context: &ScanContext,
 ) -> Result<SpaceMapResult, String> {
-    let root = requested
-        .canonicalize()
-        .map_err(|error| format!("无法访问 {}：{error}", requested.display()))?;
+    let root = path_safety::existing_path(requested)?;
+    if !path_safety::readable(&root) {
+        return Err("此目录受保护，不能扫描".into());
+    }
     if !root.is_dir() {
         return Err(format!("{} 不是文件夹", root.display()));
     }
@@ -294,6 +353,13 @@ fn scan_direct_child(direct_child: &Path, minimum_file_size: u64, context: &Scan
         return;
     }
 
+    if !path_safety::readable(direct_child) {
+        let mut progress = lock(&context.progress);
+        if context.generation.load(Ordering::Relaxed) == context.request_generation {
+            progress.skipped_items += 1;
+        }
+        return;
+    }
     let entry_seed = make_entry(direct_child, &metadata);
     let mut delta = ProgressDelta::default();
     let mut last_publish = Instant::now();
@@ -320,6 +386,7 @@ fn scan_direct_child(direct_child: &Path, minimum_file_size: u64, context: &Scan
         .follow_links(false)
         .same_file_system(true)
         .into_iter()
+        .filter_entry(|entry| path_safety::readable(entry.path()))
     {
         if is_cancelled(context) {
             break;
@@ -882,6 +949,33 @@ mod tests {
         fs::remove_dir_all(outside).unwrap();
     }
 
+    #[test]
+    fn deletion_rejects_forged_roots_unscanned_and_replaced_files() {
+        let root = fixture_dir("authorized").canonicalize().unwrap();
+        fs::write(root.join("scanned.bin"), [1]).unwrap();
+        let mut result = analyze_directory(&root, 1, &test_context(1)).unwrap();
+        let mut authorization = AuthorizedScan::from_result(&result, 1).unwrap();
+        fs::write(root.join("unscanned.bin"), [2]).unwrap();
+        assert!(
+            trash_authorized_entry(&mut authorization, &root, &root.join("unscanned.bin")).is_err()
+        );
+        assert!(trash_authorized_entry(
+            &mut authorization,
+            root.parent().unwrap(),
+            &root.join("scanned.bin")
+        )
+        .is_err());
+        fs::rename(root.join("scanned.bin"), root.join("old.bin")).unwrap();
+        fs::write(root.join("scanned.bin"), [3]).unwrap();
+        assert!(
+            trash_authorized_entry(&mut authorization, &root, &root.join("scanned.bin")).is_err()
+        );
+        result.incomplete = true;
+        assert!(AuthorizedScan::from_result(&result, 1).is_none());
+        assert!(root.join("scanned.bin").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn moves_disposable_file_and_folder_to_system_trash() {
@@ -889,8 +983,20 @@ mod tests {
         fs::write(root.join("disposable-test-file.bin"), [1]).unwrap();
         fs::create_dir(root.join("disposable-test-folder")).unwrap();
         fs::write(root.join("disposable-test-folder/child.bin"), [2]).unwrap();
-        trash_scanned_entry(&root, &root.join("disposable-test-file.bin")).unwrap();
-        trash_scanned_entry(&root, &root.join("disposable-test-folder")).unwrap();
+        let result = analyze_directory(&root, 1, &test_context(1)).unwrap();
+        let mut authorization = AuthorizedScan::from_result(&result, 1).unwrap();
+        trash_authorized_entry(
+            &mut authorization,
+            &root,
+            &root.join("disposable-test-file.bin"),
+        )
+        .unwrap();
+        trash_authorized_entry(
+            &mut authorization,
+            &root,
+            &root.join("disposable-test-folder"),
+        )
+        .unwrap();
         assert!(!root.join("disposable-test-file.bin").exists());
         assert!(!root.join("disposable-test-folder").exists());
         assert!(root.exists());

@@ -8,7 +8,7 @@ categories:
   # ── 系统缓存 (低风险) ──
   system_cache:
     name: "系统缓存"
-    description: "macOS 和应用程序的缓存文件，删除后会自动重建，不影响正常使用"
+    description: "macOS 和应用程序的缓存文件，通常可重建；建议先退出相关应用"
     risk: low
     paths:
       - "~/Library/Caches/*"
@@ -45,9 +45,22 @@ categories:
     risk: low
     paths:
       - "~/Library/Developer/Xcode/DerivedData/*"
-      - "~/Library/Developer/Xcode/Archives/*"
-      - "~/Library/Developer/Xcode/iOS DeviceSupport/*"
       - "~/Library/Developer/CoreSimulator/Devices/*/data/Library/Caches/*"
+
+  xcode_device_support:
+    name: "Xcode 设备调试支持"
+    description: "删除后可能需要重新准备设备调试支持，确认不再需要后再处理"
+    risk: medium
+    paths:
+      - "~/Library/Developer/Xcode/iOS DeviceSupport/*"
+
+  # 发布归档包含 dSYM 等不可简单重建的数据，展示但禁止批量清理。
+  xcode_archives:
+    name: "Xcode 发布归档"
+    description: "包含发布归档和调试符号，可能用于重新分发及崩溃分析。请在 Xcode Organizer 中手动管理"
+    risk: high
+    paths:
+      - "~/Library/Developer/Xcode/Archives/*"
 
   # ── Homebrew 缓存 (低风险) ──
   homebrew_cache:
@@ -83,7 +96,7 @@ categories:
   # ── 下载残留 (中风险) ──
   downloads_leftover:
     name: "下载残留"
-    description: "下载目录中已过期的 DMG、ZIP 等安装包，建议确认后删除"
+    description: "下载目录中的 DMG、ZIP 等安装包；不自动判断是否过期，请逐项确认"
     risk: medium
     paths:
       - "~/Downloads/*.dmg"
@@ -94,7 +107,7 @@ categories:
   # ── 废纸篓 (中风险) ──
   trash:
     name: "废纸篓内容"
-    description: "已移到废纸篓但未清空的文件和文件夹"
+    description: "已移到废纸篓的文件；仅在选择永久删除并明确确认后处理"
     risk: medium
     paths:
       - "~/.Trash/*"

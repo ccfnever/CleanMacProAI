@@ -1,6 +1,10 @@
-/// 软件卸载 — Tauri Commands
+//! 软件卸载 — Tauri Commands
 
-use crate::models::{CleanError, CleanReport, FileInfo, InstalledApp};
+use super::{
+    deletion,
+    path_safety::{self, FileIdentity},
+};
+use crate::models::{CleanError, CleanReport, DeletionMode, FileInfo, InstalledApp};
 use plist::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -47,13 +51,15 @@ fn list_apps_from_roots(roots: Vec<PathBuf>) -> Result<Vec<InstalledApp>, String
         }
     }
 
-    apps.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    apps.sort_by_key(|app| app.name.to_lowercase());
     Ok(apps)
 }
 
 fn is_visible_app_bundle(path: &Path) -> bool {
     path.extension().and_then(|ext| ext.to_str()) == Some("app")
-        && path.file_name().and_then(|name| name.to_str())
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
             .is_some_and(|name| !name.starts_with('.'))
 }
 
@@ -73,8 +79,11 @@ fn inspect_installed_app_blocking(
 ) -> Result<InstalledApp, String> {
     if let Some(app_path) = app_path {
         let path = expand_home(&app_path);
+        validate_application_path(&path)?;
+        let identity = FileIdentity::capture(&path)?;
         if let Some(app) = read_app_bundle(&path, true) {
             if app.bundle_id == bundle_id {
+                identity.verify(&path)?;
                 return Ok(app);
             }
         }
@@ -88,8 +97,11 @@ fn inspect_installed_app_blocking(
 pub async fn uninstall_app(
     bundle_id: String,
     app_path: Option<String>,
+    mode: Option<DeletionMode>,
+    permanent_confirmed: Option<bool>,
 ) -> Result<CleanReport, String> {
-    tokio::task::spawn_blocking(move || uninstall_app_blocking(bundle_id, app_path))
+    let mode = deletion::confirmed_mode(mode, permanent_confirmed)?;
+    tokio::task::spawn_blocking(move || uninstall_app_blocking(bundle_id, app_path, mode))
         .await
         .map_err(|error| format!("Application uninstall task failed: {error}"))?
 }
@@ -97,8 +109,9 @@ pub async fn uninstall_app(
 fn uninstall_app_blocking(
     bundle_id: String,
     app_path: Option<String>,
+    mode: DeletionMode,
 ) -> Result<CleanReport, String> {
-    let app = resolve_app_for_uninstall(&bundle_id, app_path)?;
+    let (app, app_identity) = resolve_app_for_uninstall(&bundle_id, app_path)?;
 
     if app.is_system_app {
         return Err("Refusing to uninstall a system application".to_string());
@@ -110,36 +123,65 @@ fn uninstall_app_blocking(
     targets.retain(|target| seen.insert(target.clone()));
 
     let mut cleaned_count = 0_u64;
-    let mut freed_bytes = 0_u64;
+    let mut processed_bytes = 0_u64;
     let mut skipped_count = 0_u64;
     let mut errors = Vec::new();
 
     for (index, target) in targets.into_iter().enumerate() {
         let path = expand_home(&target);
-        if !is_safe_uninstall_target(&path) {
-            skipped_count += 1;
-            errors.push(CleanError {
-                path: target,
-                reason: "Path is outside uninstall safety boundaries".to_string(),
-            });
+        let validated = validate_uninstall_target(&path).and_then(|path| {
             if index == 0 {
-                break;
+                validate_application_path(&path)?;
             }
-            continue;
-        }
-
+            path_safety::validate_tree(&path, |_| false)
+        });
+        let path = match validated {
+            Ok(path) => path,
+            Err(reason) => {
+                skipped_count += 1;
+                errors.push(CleanError {
+                    path: target,
+                    reason,
+                });
+                if index == 0 {
+                    break;
+                }
+                continue;
+            }
+        };
+        let identity = match if index == 0 {
+            app_identity.verify(&path).map(|()| app_identity.clone())
+        } else {
+            FileIdentity::capture(&path)
+        } {
+            Ok(identity) => identity,
+            Err(reason) => {
+                skipped_count += 1;
+                errors.push(CleanError {
+                    path: target,
+                    reason,
+                });
+                if index == 0 {
+                    break;
+                }
+                continue;
+            }
+        };
         let size = path_size(&path);
         let count = path_count_for_report(&path);
-        let result = delete_uninstall_target(&path);
+        let result = deletion::execute(&path, &identity, mode);
 
         match result {
             Ok(()) => {
                 cleaned_count += count;
-                freed_bytes += size;
+                processed_bytes += size;
             }
             Err(reason) => {
                 skipped_count += 1;
-                errors.push(CleanError { path: target, reason });
+                errors.push(CleanError {
+                    path: target,
+                    reason,
+                });
                 if index == 0 {
                     break;
                 }
@@ -149,71 +191,48 @@ fn uninstall_app_blocking(
 
     Ok(CleanReport {
         cleaned_count,
-        freed_bytes,
+        freed_bytes: if mode == DeletionMode::Permanent {
+            processed_bytes
+        } else {
+            0
+        },
+        processed_bytes,
+        deletion_mode: mode,
         skipped_count,
         errors,
     })
 }
 
-fn delete_uninstall_target(path: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    let result = if metadata.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            #[cfg(target_os = "macos")]
-            if error.kind() == std::io::ErrorKind::PermissionDenied && !metadata.file_type().is_symlink()
-                && path.parent() == Some(Path::new("/Applications"))
-                && path.extension().and_then(|value| value.to_str()) == Some("app") {
-                return delete_application_with_authorization(path);
-            }
-            Err(error.to_string())
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn delete_application_with_authorization(path: &Path) -> Result<(), String> {
-    let canonical = path.canonicalize().map_err(|error| error.to_string())?;
-    if canonical.parent() != Some(Path::new("/Applications"))
-        || canonical.extension().and_then(|value| value.to_str()) != Some("app") {
-        return Err("管理员授权仅用于 /Applications 下的应用程序".into());
-    }
-    let script = r#"
-on run argv
-    set sourcePath to item 1 of argv
-    do shell script "/bin/rm -rf -- " & quoted form of sourcePath with administrator privileges
-end run
-"#;
-    let output = Command::new("/usr/bin/osascript").args(["-e", script, "--"]).arg(&canonical)
-        .output().map_err(|error| format!("无法请求管理员授权：{error}"))?;
-    if output.status.success() && fs::symlink_metadata(&canonical).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
-        return Ok(());
-    }
-    let error = String::from_utf8_lossy(&output.stderr);
-    if error.contains("(-128)") { return Err("管理员授权已取消".into()); }
-    Err(format!("应用删除未完成：{}", error.trim()))
-}
-
 fn resolve_app_for_uninstall(
     bundle_id: &str,
     app_path: Option<String>,
-) -> Result<InstalledApp, String> {
+) -> Result<(InstalledApp, FileIdentity), String> {
     if let Some(app_path) = app_path {
         let path = expand_home(&app_path);
-        if !is_safe_uninstall_target(&path) {
-            return Err("Application path is outside uninstall safety boundaries".to_string());
-        }
+        validate_application_path(&path)?;
+        let identity = FileIdentity::capture(&path)?;
 
         let app = read_app_bundle(&path, true)
             .ok_or_else(|| format!("Application not found at '{}'", app_path))?;
         if app.bundle_id != bundle_id {
-            return Err("Application bundle identifier does not match the selected app".to_string());
+            return Err(
+                "Application bundle identifier does not match the selected app".to_string(),
+            );
         }
-        return Ok(app);
+        identity.verify(&path)?;
+        return Ok((app, identity));
     }
 
-    find_app_by_bundle_id(bundle_id, true).ok_or_else(|| "Application not found".to_string())
+    let app = find_app_by_bundle_id(bundle_id, true)
+        .ok_or_else(|| "Application not found".to_string())?;
+    let path = validate_application_path(&expand_home(&app.app_path))?;
+    let identity = FileIdentity::capture(&path)?;
+    let current = read_app_bundle(&path, true).ok_or("应用已不存在，请重新扫描")?;
+    if current.bundle_id != bundle_id {
+        return Err("应用身份已改变，请重新扫描".into());
+    }
+    identity.verify(&path)?;
+    Ok((current, identity))
 }
 
 fn find_app_by_bundle_id(bundle_id: &str, include_details: bool) -> Option<InstalledApp> {
@@ -237,7 +256,9 @@ fn application_roots() -> Vec<PathBuf> {
 }
 
 fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
+    path_safety::existing_path(path).ok()?;
     let info_plist = path.join("Contents/Info.plist");
+    path_safety::existing_path(&info_plist).ok()?;
     let value = Value::from_file(info_plist).ok()?;
     let dictionary = value.as_dictionary()?;
 
@@ -271,14 +292,24 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
     let app_path = path.to_string_lossy().to_string();
     // The initial list must not launch Spotlight or image-conversion processes.
     // These are enriched one app at a time after the list is already visible.
-    let icon = if include_details { app_icon_asset(path, &bundle_id, dictionary) } else { None };
-    let is_system_app = app_path.starts_with("/System/");
+    let icon = if include_details {
+        app_icon_asset(path, &bundle_id, dictionary)
+    } else {
+        None
+    };
+    let is_system_app = app_path.starts_with("/System/")
+        || bundle_id.starts_with("com.apple.")
+        || bundle_id == "com.cleanmacproai.desktop";
 
     Some(InstalledApp {
         name,
         bundle_id,
         app_path,
-        last_opened_at: if include_details { app_last_opened_at(path) } else { None },
+        last_opened_at: if include_details {
+            app_last_opened_at(path)
+        } else {
+            None
+        },
         icon_path: icon.as_ref().map(|asset| asset.path.clone()),
         icon_data_url: icon.and_then(|asset| asset.data_url),
         app_size,
@@ -290,15 +321,24 @@ fn read_app_bundle(path: &Path, include_details: bool) -> Option<InstalledApp> {
 }
 
 fn app_last_opened_at(path: &Path) -> Option<i64> {
-    let output = command_output_with_timeout(Command::new("/usr/bin/mdls")
-        .args(["-raw", "-name", "kMDItemLastUsedDate"])
-        .arg(path), Duration::from_millis(500))?;
-    if !output.status.success() { return None; }
+    let output = command_output_with_timeout(
+        Command::new("/usr/bin/mdls")
+            .args(["-raw", "-name", "kMDItemLastUsedDate"])
+            .arg(path),
+        Duration::from_millis(500),
+    )?;
+    if !output.status.success() {
+        return None;
+    }
     parse_last_opened_at(&String::from_utf8(output.stdout).ok()?)
 }
 
 fn command_output_with_timeout(command: &mut Command, timeout: Duration) -> Option<Output> {
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -356,7 +396,10 @@ fn app_icon_asset(
     };
 
     let source = candidates.into_iter().find(|path| path.exists())?;
-    let extension = source.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    let extension = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
 
     let display_path = if extension.eq_ignore_ascii_case("icns") {
         convert_icns_to_png(&source, bundle_id).unwrap_or_else(|| source.clone())
@@ -385,11 +428,14 @@ fn convert_icns_to_png(source: &Path, bundle_id: &str) -> Option<PathBuf> {
         return Some(output_path);
     }
 
-    let output = command_output_with_timeout(Command::new("sips")
-        .args(["-s", "format", "png"])
-        .arg(source)
-        .arg("--out")
-        .arg(&output_path), Duration::from_secs(2))?;
+    let output = command_output_with_timeout(
+        Command::new("sips")
+            .args(["-s", "format", "png"])
+            .arg(source)
+            .arg("--out")
+            .arg(&output_path),
+        Duration::from_secs(2),
+    )?;
 
     if output.status.success() && output_path.exists() {
         Some(output_path)
@@ -402,7 +448,9 @@ fn image_data_url(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
     let mime = match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("png") => "image/png",
-        Some(ext) if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") => "image/jpeg",
+        Some(ext) if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") => {
+            "image/jpeg"
+        }
         Some(ext) if ext.eq_ignore_ascii_case("gif") => "image/gif",
         _ => return None,
     };
@@ -472,7 +520,7 @@ fn related_app_data(name: &str, bundle_id: &str) -> RelatedAppData {
     let mut preview_files = Vec::new();
 
     for path in candidate_paths {
-        if !path.exists() {
+        if path_safety::existing_path(&path).is_err() || !path_safety::readable(&path) {
             continue;
         }
 
@@ -618,25 +666,40 @@ fn display_path(path: &Path) -> String {
         .unwrap_or(absolute)
 }
 
-fn is_safe_uninstall_target(path: &Path) -> bool {
-    let Ok(canonical) = path.canonicalize() else {
-        return false;
-    };
-    let text = canonical.to_string_lossy();
-    let Some(home) = dirs::home_dir() else {
-        return false;
-    };
-    let home_text = home.to_string_lossy();
+fn validate_application_path(path: &Path) -> Result<PathBuf, String> {
+    let target = path_safety::validate_delete(path)?;
+    if target.extension().and_then(|value| value.to_str()) != Some("app")
+        || !application_roots()
+            .iter()
+            .any(|root| target.parent() == Some(root.as_path()))
+    {
+        return Err("只能卸载应用目录中的顶层 .app 程序".into());
+    }
+    Ok(target)
+}
 
-    text.starts_with("/Applications/")
-        || text.starts_with(&format!("{}/Applications/", home_text))
-        || text.starts_with(&format!("{}/Library/Caches/", home_text))
-        || text.starts_with(&format!("{}/Library/Logs/", home_text))
-        || text.starts_with(&format!("{}/Library/Preferences/", home_text))
-        || text.starts_with(&format!("{}/Library/Application Support/", home_text))
-        || text.starts_with(&format!("{}/Library/Containers/", home_text))
-        || text.starts_with(&format!("{}/Library/Group Containers/", home_text))
-        || text.starts_with(&format!("{}/Library/Saved Application State/", home_text))
+fn validate_uninstall_target(path: &Path) -> Result<PathBuf, String> {
+    let target = path_safety::validate_delete(path)?;
+    let home = dirs::home_dir().ok_or("无法确定用户目录")?;
+    let mut roots = application_roots();
+    roots.extend(
+        [
+            "Library/Caches",
+            "Library/Logs",
+            "Library/Preferences",
+            "Library/Application Support",
+            "Library/Containers",
+            "Library/Saved Application State",
+        ]
+        .into_iter()
+        .map(|name| home.join(name)),
+    );
+    for root in roots {
+        if target.parent() == Some(root.as_path()) {
+            return path_safety::validate_child(&root, &target);
+        }
+    }
+    Err("路径不在后端应用及关联数据范围内".into())
 }
 
 #[cfg(test)]
@@ -644,50 +707,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn permanent_delete_removes_bundle_and_unlinks_symlinks_only() {
-        let root = std::env::temp_dir().join(format!("cleanmac-uninstall-delete-{}", std::process::id()));
-        let bundle = root.join("Disposable.app");
-        fs::create_dir_all(bundle.join("Contents")).unwrap();
-        fs::write(bundle.join("Contents/test"), "fixture").unwrap();
-        delete_uninstall_target(&bundle).unwrap();
-        assert!(!bundle.exists());
-        let retained = root.join("retained");
-        fs::write(&retained, "retain").unwrap();
-        #[cfg(unix)] {
-            let link = root.join("link");
-            std::os::unix::fs::symlink(&retained, &link).unwrap();
-            delete_uninstall_target(&link).unwrap();
-            assert!(fs::symlink_metadata(link).is_err());
-            assert_eq!(fs::read_to_string(&retained).unwrap(), "retain");
-        }
-        delete_uninstall_target(&retained).unwrap();
-        assert!(!retained.exists());
-        fs::remove_dir_all(root).unwrap();
+    fn uninstall_rejects_non_app_paths_shared_containers_and_system_apps() {
+        let home = dirs::home_dir().unwrap();
+        assert!(validate_application_path(&home.join("Library/Caches")).is_err());
+        assert!(validate_uninstall_target(&home.join("Library/Group Containers")).is_err());
+        assert!(validate_uninstall_target(Path::new("/System")).is_err());
+        assert!(
+            resolve_app_for_uninstall("fake.id", Some(home.to_string_lossy().into_owned()))
+                .is_err()
+        );
     }
 
     #[test]
     fn quick_list_returns_before_detail_enrichment() {
         let started = Instant::now();
         let apps = list_installed_apps_blocking().unwrap();
-        println!("Quick application list: {} apps in {:?}", apps.len(), started.elapsed());
+        println!(
+            "Quick application list: {} apps in {:?}",
+            apps.len(),
+            started.elapsed()
+        );
         assert!(apps.iter().all(|app| app.icon_data_url.is_none()
-            && app.last_opened_at.is_none() && app.app_size == 0 && app.related_size == 0));
+            && app.last_opened_at.is_none()
+            && app.app_size == 0
+            && app.related_size == 0));
     }
 
     #[cfg(unix)]
     #[test]
     fn metadata_command_timeout_does_not_block_detail_queue() {
-        assert!(command_output_with_timeout(Command::new("/bin/sleep").arg("2"),
-            Duration::from_millis(30)).is_none());
-        let output = command_output_with_timeout(Command::new("/usr/bin/printf").arg("ok"),
-            Duration::from_secs(1)).unwrap();
+        assert!(command_output_with_timeout(
+            Command::new("/bin/sleep").arg("2"),
+            Duration::from_millis(30)
+        )
+        .is_none());
+        let output = command_output_with_timeout(
+            Command::new("/usr/bin/printf").arg("ok"),
+            Duration::from_secs(1),
+        )
+        .unwrap();
         assert_eq!(output.stdout, b"ok");
     }
 
     #[test]
     fn parses_spotlight_last_opened_date_without_inventing_missing_dates() {
-        assert_eq!(parse_last_opened_at("2026-10-07 11:48:06 +0000"),
-            parse_last_opened_at("2026-10-07 19:48:06 +0800"));
+        assert_eq!(
+            parse_last_opened_at("2026-10-07 11:48:06 +0000"),
+            parse_last_opened_at("2026-10-07 19:48:06 +0800")
+        );
         assert!(parse_last_opened_at("2026-10-07 11:48:06 +0000").is_some());
         assert_eq!(parse_last_opened_at("(null)"), None);
         assert_eq!(parse_last_opened_at("not a date"), None);
@@ -705,7 +772,9 @@ mod tests {
         assert_eq!(apps.len(), 2);
         assert_ne!(apps[0].app_path, apps[1].app_path);
         assert!(apps.iter().all(|app| app.bundle_id == "test.archive"));
-        assert!(apps.iter().all(|app| !app.app_path.contains(".Archive-backup")));
+        assert!(apps
+            .iter()
+            .all(|app| !app.app_path.contains(".Archive-backup")));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -767,7 +836,10 @@ mod tests {
     #[test]
     fn related_matching_accepts_exact_app_name_only() {
         assert!(is_related_filename("WeChat", "WeChat", "com.tencent.xin"));
-        assert!(!is_related_filename("WeChat Helper", "WeChat", "com.tencent.xin"));
+        assert!(!is_related_filename(
+            "WeChat Helper",
+            "WeChat",
+            "com.tencent.xin"
+        ));
     }
-
 }
