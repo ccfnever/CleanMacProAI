@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { watch, computed, onMounted, onUnmounted, ref } from 'vue';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import AppIcon from '../components/AppIcon.vue';
 import { matchesStartup, startupKindLabels, startupPreview, type StartupFilter, type StartupItem, type StartupScan } from '../lib/startupItems';
@@ -8,6 +8,10 @@ const preview = !isTauri();
 const items = ref<StartupItem[]>([]);
 const warnings = ref<string[]>([]);
 const loading = ref(true);
+
+const emit = defineEmits<{ scanning: [active: boolean] }>();
+watch(loading, (active) => emit("scanning", active), { immediate: true });
+
 const pending = ref<string | null>(null);
 const error = ref('');
 const notice = ref('');

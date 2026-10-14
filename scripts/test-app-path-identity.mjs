@@ -13,13 +13,13 @@ const transpile = (source) => ts.transpileModule(source, {
 try {
   const view = await readFile(new URL("../src/views/UninstallerView.vue", import.meta.url), "utf8");
   const script = view.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
-  await writeFile(join(temp, "view.mjs"), transpile(`${script}\nexport { apps, inspectApp, toggleSelected, toggleExpanded, selectedApps, expandedAppPaths, uninstallSelected, requestUninstall, isConfirmingUninstall, dataSource, sortBy, filteredApps, deletionMode, confirmedMode, permanentAcknowledged, notice, uninstallReport };`)
+  await writeFile(join(temp, "view.mjs"), transpile(`const defineEmits = () => () => {};\n${script}\nexport { apps, inspectApp, toggleSelected, toggleExpanded, selectedApps, expandedAppPaths, uninstallSelected, requestUninstall, isConfirmingUninstall, dataSource, sortBy, filteredApps, deletionMode, confirmedMode, permanentAcknowledged, notice, uninstallReport };`)
     .replaceAll('"vue"', '"./vue.mjs"')
     .replaceAll('"../lib/demoData"', '"./boundary.mjs"')
     .replaceAll('"../lib/appOccupancy"', '"./occupancy.mjs"')
     .replaceAll('"../stores/disk"', '"./disk.mjs"'));
   await writeFile(join(temp, "occupancy.mjs"), transpile(await readFile(new URL("../src/lib/appOccupancy.ts", import.meta.url), "utf8")));
-  await writeFile(join(temp, "vue.mjs"), 'export { computed, ref } from "vue"; export const onMounted = () => {}; export const onUnmounted = () => {};');
+  await writeFile(join(temp, "vue.mjs"), 'export { computed, ref, watch } from "vue"; export const onMounted = () => {}; export const onUnmounted = () => {};');
   await writeFile(join(temp, "boundary.mjs"), `
     export const formatBytes = String;
     export const demoDiskInfo = {};

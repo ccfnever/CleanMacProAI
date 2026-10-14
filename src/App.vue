@@ -15,6 +15,7 @@ const StartupView = defineAsyncComponent(() => import("./views/StartupView.vue")
 type ViewName = "dashboard" | "scanner" | "space-map" | "uninstaller" | "startup" | "settings";
 
 const currentView = ref<ViewName>("dashboard");
+const scanningViews = ref<Record<string, boolean>>({});
 const SpaceMapView = defineAsyncComponent(() => import("./views/SpaceMapView.vue"));
 const diskStore = useDiskStore();
 const { diskInfo, dataSource, diskNotice } = storeToRefs(diskStore);
@@ -48,7 +49,7 @@ onMounted(async () => {
 
 <template>
   <div class="app-shell">
-    <Sidebar v-model:current-view="currentView" :disk-info="diskInfo" :data-source="dataSource" />
+    <Sidebar v-model:current-view="currentView" :disk-info="diskInfo" :data-source="dataSource" :scanning-views="scanningViews" />
 
     <main :class="['content-stage', `view-${currentView}`]">
       <header class="topbar" data-tauri-drag-region>
@@ -77,12 +78,14 @@ onMounted(async () => {
       <p v-if="diskNotice" class="app-notice" role="alert">{{ diskNotice }}</p>
 
       <Transition name="view-fade" mode="out-in">
-        <DashboardView v-if="currentView === 'dashboard'" key="dashboard" :disk-info="diskInfo" :data-source="dataSource" @navigate="navigate" />
-        <ScannerView v-else-if="currentView === 'scanner'" key="scanner" />
-        <SpaceMapView v-else-if="currentView === 'space-map'" key="space-map" />
-        <UninstallerView v-else-if="currentView === 'uninstaller'" key="uninstaller" />
-        <StartupView v-else-if="currentView === 'startup'" key="startup" />
-        <SettingsView v-else key="settings" />
+        <KeepAlive>
+          <DashboardView v-if="currentView === 'dashboard'" key="dashboard" :disk-info="diskInfo" :data-source="dataSource" @navigate="navigate" />
+          <ScannerView v-else-if="currentView === 'scanner'" key="scanner" @scanning="scanningViews.scanner = $event" />
+          <SpaceMapView v-else-if="currentView === 'space-map'" key="space-map" @scanning="scanningViews['space-map'] = $event" />
+          <UninstallerView v-else-if="currentView === 'uninstaller'" key="uninstaller" @scanning="scanningViews.uninstaller = $event" />
+          <StartupView v-else-if="currentView === 'startup'" key="startup" @scanning="scanningViews.startup = $event" />
+          <SettingsView v-else key="settings" />
+        </KeepAlive>
       </Transition>
     </main>
   </div>

@@ -5,6 +5,7 @@ import { formatBytes, type DiskInfo } from "../lib/demoData";
 
 const props = defineProps<{
   currentView: string;
+  scanningViews: Record<string, boolean>;
   diskInfo: DiskInfo;
   dataSource: "native" | "demo";
 }>();
@@ -50,12 +51,14 @@ function selectView(id: string) {
         :key="item.id"
         type="button"
         :class="['nav-item', { active: currentView === item.id }]"
+        :aria-label="scanningViews[item.id] ? `${item.label}，扫描中` : item.label"
         :aria-current="currentView === item.id ? 'page' : undefined"
         @click="selectView(item.id)"
       >
         <span class="nav-glyph"><AppIcon :name="item.icon" :size="19" /></span>
-        <span class="nav-copy"><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span>
-        <span class="nav-arrow">›</span>
+        <span class="nav-copy"><strong>{{ item.label }}</strong><small>{{ scanningViews[item.id] ? "扫描中 · 可切换页面" : item.description }}</small></span>
+        <span v-if="scanningViews[item.id]" class="nav-scanning" aria-hidden="true"></span>
+        <span v-else class="nav-arrow">›</span>
       </button>
     </nav>
 
@@ -108,6 +111,9 @@ function selectView(id: string) {
 .nav-copy strong, .nav-copy small { display: block; }
 .nav-copy strong { font-size: 12px; }
 .nav-copy small { margin-top: 2px; overflow: hidden; color: var(--text-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.nav-scanning { width: 14px; height: 14px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: nav-scan-spin 900ms linear infinite; }
+@keyframes nav-scan-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .nav-scanning { animation: none; } }
 .nav-arrow { color: var(--text-faint); font-size: 18px; opacity: 0; transform: translateX(-3px); transition: 150ms ease; }
 .nav-item.active .nav-arrow, .nav-item:hover .nav-arrow { opacity: 1; transform: none; }
 

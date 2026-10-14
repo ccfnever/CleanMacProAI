@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { onMounted, watch, computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import AppIcon from "../components/AppIcon.vue";
@@ -43,6 +43,11 @@ const {
   toggleCategory,
   toggleExpanded,
 } = scannerStore;
+
+onMounted(() => { void startScan(); });
+
+const emit = defineEmits<{ scanning: [active: boolean] }>();
+watch(isScanning, (active) => emit("scanning", active), { immediate: true });
 
 const cleanDialog = ref<HTMLDialogElement | null>(null);
 const permanentAcknowledged = ref(false);
@@ -368,11 +373,11 @@ async function openFolder(path: string) {
 
     <section v-else class="empty-state">
       <span class="icon-tile tone-map"><AppIcon name="scan" :size="30" /></span>
-      <h1>{{ cleanReport ? "本次清理已完成" : "准备好检查一下了吗？" }}</h1>
-      <p>{{ cleanReport ? "可以重新扫描，确认现在还剩下哪些可处理内容。" : "扫描不会修改文件，也不会自动执行清理。" }}</p>
+      <h1>{{ cleanReport ? "本次清理已完成" : notice?.startsWith("扫描失败") ? "扫描未完成" : "未发现可清理项目" }}</h1>
+      <p>{{ cleanReport ? "可以重新扫描，确认现在还剩下哪些可处理内容。" : notice || "扫描已完成，暂时没有需要处理的内容。" }}</p>
       <button type="button" class="primary-action" @click="startScan">
         <AppIcon :name="cleanReport ? 'refresh' : 'scan'" :size="17" />
-        {{ cleanReport ? "重新扫描" : "开始扫描" }}
+        重新扫描
       </button>
     </section>
     <dialog ref="cleanDialog" class="clean-dialog" aria-labelledby="clean-dialog-title">

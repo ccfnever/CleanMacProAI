@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useThemeStore } from "../stores/theme";
 import { storeToRefs } from "pinia";
@@ -61,6 +61,10 @@ const result = computed<SpaceMapResult | null>(() => {
     entries: directory.children ?? [] };
 });
 const loading = ref(false);
+
+const emit = defineEmits<{ scanning: [active: boolean] }>();
+watch(loading, (active) => emit("scanning", active), { immediate: true });
+
 const cancelled = ref(false);
 const errorMessage = ref("");
 const source = ref<"native" | "demo">("demo");
@@ -434,7 +438,7 @@ async function requestFullDiskAccess() {
 }
 
 function renderChart() {
-  if (loading.value || !chartElement.value) return;
+  if (loading.value || !chartElement.value?.isConnected) return;
   const currentElement = chartElement.value;
   chart ??= echarts.init(currentElement, undefined, { renderer: "canvas" });
   const currentChart = chart;
@@ -546,6 +550,8 @@ watch(liveChartElement, (element) => {
 
 watch(currentTheme, () => nextTick(renderChart));
 watch(visualizationEntries, () => nextTick(renderChart));
+
+onActivated(() => { void nextTick(() => { renderChart(); chart?.resize(); }); });
 
 onMounted(() => {
   if (chartElement.value) {

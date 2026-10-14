@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { watch, computed, onMounted, onUnmounted, ref } from "vue";
 import {
   formatBytes,
   invokeOrDemo,
@@ -54,6 +54,10 @@ const selectedAppPaths = ref<Set<string>>(new Set());
 const failedIconPaths = ref<Set<string>>(new Set());
 const expandedAppPaths = ref<Set<string>>(new Set());
 const isAutoScanning = ref(false);
+
+const emit = defineEmits<{ scanning: [active: boolean] }>();
+watch(() => isLoading.value || isAutoScanning.value, (active) => emit("scanning", active), { immediate: true });
+
 const autoScanCompletedCount = ref(0);
 const notice = ref<string | null>(null);
 const uninstallReport = ref<CleanReport | null>(null);
