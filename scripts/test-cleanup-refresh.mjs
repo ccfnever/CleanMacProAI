@@ -52,16 +52,16 @@ try {
   }
 
   let scanner = setup(responses());
-  await scanner.cleanSelected();
+  await scanner.cleanSelected(true);
   assert.deepEqual(useDiskStore().diskInfo, disk);
   assert.equal(useDiskStore().dataSource, "native");
   assert.equal(scanner.cleanProgress, 100);
   assert.equal(scanner.isCleaning, false);
   assert.deepEqual(globalThis.cleanupCalls.map(({ command }) => command), ["clean_categories", "get_disk_info", "scan_system"]);
-  assert.deepEqual(globalThis.cleanupCalls[0].args, { categoryIds: [category.id], mode: "trash", permanentConfirmed: false });
+  assert.deepEqual(globalThis.cleanupCalls[0].args, { categoryIds: [category.id], mode: "permanent", permanentConfirmed: true });
 
   scanner = setup(responses({ ...report, skipped_count: 1, errors: [{ path: "locked", reason: "permission" }] }, { source: "error", error: "scan failed" }));
-  await scanner.cleanSelected();
+  await scanner.cleanSelected(true);
   assert.deepEqual(useDiskStore().diskInfo, disk); // refresh even on partial success and rescan failure
   assert.match(scanner.notice, /清理部分完成/);
 
@@ -70,21 +70,20 @@ try {
   scanner = setup(failedDisk);
   const previous = { ...disk, available_bytes: 120, used_bytes: 880, usage_percent: 88 };
   useDiskStore().diskInfo = previous;
-  await scanner.cleanSelected();
+  await scanner.cleanSelected(true);
   assert.deepEqual(useDiskStore().diskInfo, previous); // preserve last real reading
   assert.match(useDiskStore().diskNotice, /disk unavailable/);
   assert.equal(scanner.cleanProgress, 100);
 
   scanner = setup([{ command: "clean_categories", result: { source: "error", error: "cleanup failed" } }]);
-  await scanner.cleanSelected();
+  await scanner.cleanSelected(true);
   assert.equal(globalThis.cleanupCalls.length, 1);
   assert.equal(scanner.isCleaning, false);
   assert.match(scanner.notice, /cleanup failed/);
 
   scanner = setup(responses({ ...report, processed_bytes: 200, deletion_mode: "permanent" }));
-  scanner.deletionMode = "permanent";
   await scanner.cleanSelected();
-  assert.equal(globalThis.cleanupCalls.length, 0); // permanent mode alone is not consent
+  assert.equal(globalThis.cleanupCalls.length, 0); // only the confirmation action authorizes deletion
   assert.match(scanner.notice, /明确确认/);
   await scanner.cleanSelected(true);
   assert.deepEqual(globalThis.cleanupCalls[0].args, { categoryIds: [category.id], mode: "permanent", permanentConfirmed: true });
@@ -111,7 +110,7 @@ try {
 
   scanner = setup([]);
   scanner.dataSource = "demo";
-  await scanner.cleanSelected();
+  await scanner.cleanSelected(true);
   assert.equal(globalThis.cleanupCalls.length, 0);
   console.log("Passed: cleanup refreshes disk totals/usage, partial success, failed rescan, retained reading on disk errors, cleanup failure and demo guard.");
 } finally {

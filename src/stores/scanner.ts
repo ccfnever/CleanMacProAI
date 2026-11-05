@@ -7,7 +7,6 @@ import {
   invokeOrDemo,
   type CategoryResult,
   type CleanReport,
-  type DeletionMode,
   type ScanResult,
 } from "../lib/demoData";
 
@@ -24,7 +23,6 @@ export const useScannerStore = defineStore("scanner", () => {
   const dataSource = ref<"native" | "demo">("demo");
   const notice = ref<string | null>(null);
   const isCleaning = ref(false);
-  const deletionMode = ref<DeletionMode>("trash");
   const cleanProgress = ref(0);
   const cleanPhase = ref("等待清理");
   const lastScanDurationMs = ref<number | null>(null);
@@ -156,8 +154,8 @@ export const useScannerStore = defineStore("scanner", () => {
 
   async function cleanSelected(permanentConfirmed = false) {
     if (isCleaning.value || isScanning.value) return;
-    const mode = deletionMode.value;
-    if (mode === "permanent" && !permanentConfirmed) {
+    const mode = "permanent";
+    if (!permanentConfirmed) {
       notice.value = "永久删除需要明确确认，文件无法从废纸篓恢复。";
       return;
     }
@@ -181,11 +179,11 @@ export const useScannerStore = defineStore("scanner", () => {
     };
     try {
       cleanProgress.value = 45;
-      cleanPhase.value = mode === "trash" ? "正在移入废纸篓" : "正在永久删除已确认项目";
+      cleanPhase.value = "正在永久删除已确认项目";
       const result = await invokeOrDemo<CleanReport>("clean_categories", fallback, {
         categoryIds: selectedItems.value.map((item) => item.id),
         mode,
-        permanentConfirmed: mode === "permanent" && permanentConfirmed,
+        permanentConfirmed,
       });
       if (result.source === "error") {
         cleanProgress.value = 0;
@@ -234,7 +232,6 @@ export const useScannerStore = defineStore("scanner", () => {
       cleanPhase.value = "清理完成";
     } finally {
       isCleaning.value = false;
-      deletionMode.value = "trash";
     }
   }
 
@@ -243,7 +240,6 @@ export const useScannerStore = defineStore("scanner", () => {
     cleanPhase,
     cleanProgress,
     cleanReport,
-    deletionMode,
     dataSource,
     expandedCategory,
     highCount,
