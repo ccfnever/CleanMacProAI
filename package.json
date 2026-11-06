@@ -15,7 +15,10 @@
     "tauri": "node scripts/tauri.mjs",
     "lint": "eslint . --ext .vue,.ts --ignore-pattern node_modules --ignore-pattern dist --ignore-pattern src-tauri/target",
     "typecheck": "vue-tsc --noEmit",
-    "test": "node scripts/test-all.mjs"
+    "test": "node scripts/test-all.mjs",
+    "website:dev": "vite --config website/vite.config.ts",
+    "website:build": "vite build --config website/vite.config.ts",
+    "website:preview": "vite preview --config website/vite.config.ts"
   },
   "dependencies": {
     "vue": "^3.5.13",

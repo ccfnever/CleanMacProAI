@@ -133,3 +133,15 @@ GitHub Issue → AI Agent (Codex/Claude Code) → 隔离分支 → PR → 主人
 - 空间透镜删除权限来自后端最近一次完整扫描快照；伪造根路径、未扫描目标、被替换目标及部分扫描结果不能删除。
 - 设置页仅保留已实现并持久化的主题、权限入口和真实应用版本；隐藏未实现的自动扫描、隐藏文件、扫描深度、语言和自动更新开关。
 - 安全验证：`cargo test --manifest-path src-tauri/Cargo.toml`；前端回归：`pnpm test`；类型及构建：`pnpm build`。
+
+## 产品官网
+
+产品介绍页位于 [`website/`](website/README.md)，与桌面应用独立构建：
+
+```bash
+pnpm website:dev      # 本地预览 http://127.0.0.1:4174/
+pnpm website:build    # 生成 website/dist/ 静态站点
+pnpm website:preview  # 预览构建结果
+```
+
+包含可交互 HTML 产品演示、主题切换、FAQ、获取方式与隐私说明，始终采用温暖浅色，适配桌面和手机。页面内容及验证记录见 [`website/README.md`](website/README.md)。
